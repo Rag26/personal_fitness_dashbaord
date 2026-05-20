@@ -139,7 +139,7 @@ export function NutritionAiInsights() {
               AI Nutrition Insights
             </h2>
             <p className="text-[11px] text-[color:var(--color-text-tertiary)]">
-              Powered by Gemini 2.5 Flash — not medical advice
+              Powered by Claude — not medical advice
             </p>
           </div>
         </div>

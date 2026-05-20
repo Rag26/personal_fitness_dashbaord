@@ -89,17 +89,8 @@ export async function InsightsBelowFold({
    * pair, and a single manual-log pull (`take` capped) replaces the previous
    * (60-day window + most-recent-10) pair.
    */
-  const [runs30, fitbit30, whoop60, manualLogs] = await Promise.all([
+  const [runs30, whoop60, manualLogs] = await Promise.all([
     fetchStravaRunsInRange(userId, rangeStart, rangeEnd),
-    prisma().dailyFitbitStat.findMany({
-      where: { userId, date: { gte: rangeStart, lte: rangeEnd } },
-      select: {
-        date: true,
-        sleepMinutes: true,
-        restingHeartRateBpm: true,
-      },
-      orderBy: { date: "asc" },
-    }),
     prisma().dailyWhoopStat.findMany({
       where: { userId, date: { gte: projectionStart } },
       select: {
@@ -314,17 +305,12 @@ export async function InsightsBelowFold({
   const weightFirst = weight30Series[0]?.kg ?? null;
   const weightLast = weight30Series[weight30Series.length - 1]?.kg ?? null;
 
-  const sleepByDay30 = new Map<string, number>();
-  for (const r of fitbit30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  for (const r of whoop30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  const mergedSleepVals = [...sleepByDay30.values()];
+  const sleepMinutesAll = whoop30
+    .map((r) => r.sleepMinutes)
+    .filter((m): m is number => m != null && m > 0);
   const avgSleepH =
-    mergedSleepVals.length > 0
-      ? mergedSleepVals.reduce((a, v) => a + v, 0) / mergedSleepVals.length / 60
+    sleepMinutesAll.length > 0
+      ? sleepMinutesAll.reduce((a, v) => a + v, 0) / sleepMinutesAll.length / 60
       : null;
 
   const recoveryRows = whoop30.filter((r) => r.recoveryScore != null);
@@ -339,9 +325,6 @@ export async function InsightsBelowFold({
       : null;
 
   const sleepByDateMerged = new Map<string, number>();
-  for (const f of fitbit30) {
-    if (f.sleepMinutes != null && f.sleepMinutes > 0) sleepByDateMerged.set(isoDay(f.date), f.sleepMinutes);
-  }
   for (const w of whoop30) {
     if (w.sleepMinutes != null && w.sleepMinutes > 0) sleepByDateMerged.set(isoDay(w.date), w.sleepMinutes);
   }
@@ -379,20 +362,11 @@ export async function InsightsBelowFold({
     runs: v.runs,
   }));
 
-  const rhrByDay = new Map<string, { date: Date; rhr: number }>();
-  for (const r of fitbit30) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay.set(isoDay(r.date), { date: r.date, rhr: r.restingHeartRateBpm });
-  }
-  for (const r of whoop30) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay.set(isoDay(r.date), { date: r.date, rhr: r.restingHeartRateBpm });
-  }
-  const rhrData = [...rhrByDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, v]) => ({
-      day: shortDate(v.date),
-      rhr: v.rhr,
+  const rhrData = whoop30
+    .filter((r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
+    .map((r) => ({
+      day: shortDate(r.date),
+      rhr: r.restingHeartRateBpm as number,
     }));
 
   const recoveryData = whoop30
@@ -447,7 +421,7 @@ export async function InsightsBelowFold({
         <StatCard
           title="Sleep (avg)"
           value={avgSleepH != null ? `${avgSleepH.toFixed(1)} h` : "—"}
-          hint="WHOOP + Fitbit · 30d"
+          hint="WHOOP · 30d"
         />
         <StatCard
           title="Recovery"
@@ -492,7 +466,7 @@ export async function InsightsBelowFold({
       <section className="grid gap-4 lg:grid-cols-2">
         <ChartCard
           title="Sleep vs pace"
-          description="Sleep night before (WHOOP + Fitbit) vs run pace (min/mi)"
+          description="Sleep night before (WHOOP) vs run pace (min/mi)"
         >
           <MultiLineChartView
             data={sleepPace}
@@ -506,7 +480,7 @@ export async function InsightsBelowFold({
             height={240}
           />
         </ChartCard>
-        <ChartCard title="Resting heart rate" description="WHOOP + Fitbit · 30d">
+        <ChartCard title="Resting heart rate" description="WHOOP · 30d">
           <AreaChartView
             data={rhrData}
             xKey="day"

@@ -1,5 +1,4 @@
-import type { Prisma } from "@prisma/client";
-import { GoogleGenAI } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 
 import { prisma } from "@/lib/db";
 import { normalizeUserTimezone } from "@/lib/user-timezone";
@@ -11,17 +10,16 @@ import {
   mifflinStJeorBmrKcal,
   type BiologicalSex,
 } from "@/lib/nutrition-burn";
-import { assertGeminiTextOk } from "@/lib/gemini-output-guard";
+import { assertClaudeTextOk } from "@/lib/claude-output-guard";
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = "claude-sonnet-4-6";
 const WINDOW_DAYS = 60;
 const MIN_TRUSTED_CONSUMED_KCAL = 900;
-const JSON_MIME = "application/json";
 
 function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-  return new GoogleGenAI({ apiKey });
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  return new Anthropic({ apiKey });
 }
 
 export type NutritionInsightSection = {
@@ -37,30 +35,28 @@ export type NutritionAiInsightsResult = {
   generatedAt: string;
 };
 
-function getGeminiResponseText(response: unknown): string {
-  const r = response as any;
-  // SDK versions differ: sometimes `text` is a function, sometimes a string.
-  try {
-    if (r?.text && typeof r.text === "function") {
-      const t = r.text();
-      return typeof t === "string" ? t : "";
-    }
-  } catch {
-    // ignore
-  }
-  if (typeof r?.text === "string") return r.text;
-
-  // Fallback: candidates[0].content.parts[].text
-  const parts = r?.candidates?.[0]?.content?.parts;
-  if (Array.isArray(parts)) {
-    const joined = parts
-      .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
-      .join("");
-    if (joined.trim()) return joined;
-  }
-
-  return "";
-}
+const NUTRITION_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          emoji: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          priority: { type: "string", enum: ["high", "medium", "low"] },
+        },
+        required: ["emoji", "title", "body", "priority"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["summary", "sections"],
+  additionalProperties: false,
+} as const;
 
 function extractFirstJsonObject(text: string): string | null {
   const start = text.indexOf("{");
@@ -71,10 +67,9 @@ function extractFirstJsonObject(text: string): string | null {
 }
 
 /**
- * Gemini occasionally emits JSON-like output with raw newlines inside quoted
- * strings. That is invalid JSON (strings cannot contain literal newlines).
- * This attempts a minimal repair: escape control characters *only* while
- * inside a string literal.
+ * Minimal repair for the rare case the model emits JSON with raw newlines
+ * inside quoted strings (invalid per spec). Only escapes control chars while
+ * the cursor is inside a string literal.
  */
 function repairLikelyJson(text: string): string {
   let out = "";
@@ -243,7 +238,6 @@ async function gatherNutritionData(userId: string) {
     }),
   ]);
 
-  // MANUAL wins for intake/macros per calendar day.
   const winnerByDay = new Map<string, DayRow>();
   for (const r of rows as NutritionRow[]) {
     const dayKey = zonedDayKeyFromDate(r.date, tz);
@@ -260,7 +254,6 @@ async function gatherNutritionData(userId: string) {
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
 
-  // Active energy is only on BACKFILL rows — read independently.
   const activeByDay = new Map<string, number>();
   for (const r of rows as NutritionRow[]) {
     if (r.activeEnergyKcal != null && r.activeEnergyKcal > 0) {
@@ -406,27 +399,14 @@ Important constraints:
 - If burn/deficit is missing, do not hallucinate it.
 - This is NOT medical advice.
 
-Respond with valid JSON matching this schema (no markdown fences, just raw JSON):
-
-{
-  "summary": "2–3 sentence executive summary of nutrition patterns",
-  "sections": [
-    {
-      "emoji": "single emoji that fits the topic",
-      "title": "Short title (3–6 words)",
-      "body": "2–4 sentences with specific insight and recommendation. Reference actual numbers from the data.",
-      "priority": "high | medium | low"
-    }
-  ],
-  "generatedAt": "ISO timestamp (filled in by the app)"
-}
-
-Guidelines:
+Output rules:
 - Produce 4–5 sections total (keep output compact).
 - Keep each section body under 260 characters.
 - Keep the summary under 320 characters.
 - "high" priority = likely to meaningfully impact results or suggests a clear fix.
 - Be practical: suggest a target range, a small habit change, and a way to track it.
+- The "summary" should be 2–3 sentence executive summary of nutrition patterns.
+- Each section needs: emoji (single emoji fitting the topic), title (3–6 words), body (2–4 sentences, ≤260 chars, referencing actual numbers), priority.
 `;
 
 export async function generateAiNutritionInsights(
@@ -444,40 +424,39 @@ export async function generateAiNutritionInsights(
     };
   }
 
-  const ai = getClient();
-  const response = await ai.models.generateContent({
+  const client = getClient();
+  const response = await client.messages.create({
     model: MODEL,
-    contents: `Here is my nutrition data. Analyze it and produce insights.\n\n${dataSummary}`,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.4,
-      maxOutputTokens: 4096,
-      // Prefer strict JSON responses when supported by the SDK/model.
-      responseMimeType: JSON_MIME as unknown as never,
+    max_tokens: 4096,
+    temperature: 0.4,
+    system: SYSTEM_PROMPT,
+    output_config: {
+      format: { type: "json_schema", schema: NUTRITION_SCHEMA },
     },
+    messages: [
+      {
+        role: "user",
+        content: `Here is my nutrition data. Analyze it and produce insights.\n\n${dataSummary}`,
+      },
+    ],
   });
 
-  const text = getGeminiResponseText(response).trim();
-  assertGeminiTextOk(text);
-
-  let cleaned = text;
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  }
+  const textBlock = response.content.find((b) => b.type === "text");
+  const text = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+  assertClaudeTextOk(text);
 
   try {
-    const parsed = JSON.parse(cleaned) as NutritionAiInsightsResult;
+    const parsed = JSON.parse(text) as NutritionAiInsightsResult;
     parsed.generatedAt = new Date().toISOString();
     return parsed;
   } catch {
-    const extracted = extractFirstJsonObject(cleaned) ?? extractFirstJsonObject(text);
+    const extracted = extractFirstJsonObject(text);
     if (extracted) {
       try {
         const parsed = JSON.parse(extracted) as NutritionAiInsightsResult;
         parsed.generatedAt = new Date().toISOString();
         return parsed;
       } catch {
-        // Try minimal repair (escape raw control chars inside strings).
         try {
           const repaired = repairLikelyJson(extracted);
           const parsed = JSON.parse(repaired) as NutritionAiInsightsResult;
@@ -488,15 +467,11 @@ export async function generateAiNutritionInsights(
         }
       }
     }
-    // Surface a short, sanitized snippet to help debug model formatting.
-    const snippet = text
-      .replace(/\s+/g, " ")
-      .slice(0, 240);
+    const snippet = text.replace(/\s+/g, " ").slice(0, 240);
     const hasClosingBrace = text.includes("}");
-    assertGeminiTextOk(text);
+    assertClaudeTextOk(text);
     throw new Error(
       `Could not parse AI nutrition insights response. Please try again. (len=${text.length}, hasClosingBrace=${hasClosingBrace}, snippet: "${snippet}")`,
     );
   }
 }
-

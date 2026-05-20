@@ -29,10 +29,6 @@ import { normalizeUserTimezone } from "@/lib/user-timezone";
 
 export const dynamic = "force-dynamic";
 
-function isoDay(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 function zonedDayKey(d: Date, timeZone: string) {
   // YYYY-MM-DD in the user's timezone (prevents UTC day shifting).
   return new Intl.DateTimeFormat("en-CA", {
@@ -60,17 +56,12 @@ export default async function OverviewPage({
   const start7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const start30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-  const [user, activities7, fitbit30, whoopWeek, whoop30] = await Promise.all([
+  const [user, activities7, whoopWeek, whoop30] = await Promise.all([
     prisma().user.findUnique({
       where: { id: userId },
       select: { firstName: true, timezone: true },
     }),
     fetchStravaRunsInRange(userId, start7, now),
-    prisma().dailyFitbitStat.findMany({
-      where: { userId, date: { gte: start30 } },
-      select: { date: true, sleepMinutes: true, restingHeartRateBpm: true },
-      orderBy: { date: "asc" },
-    }),
     prisma().dailyWhoopStat.findMany({
       where: { userId, date: { gte: start7 } },
       select: {
@@ -106,18 +97,12 @@ export default async function OverviewPage({
   const miles = metersToMiles(totalMeters);
   const pace = formatPaceMinPerMile(paceSecondsPerMile({ seconds: totalSeconds, meters: totalMeters }));
 
-  // Sleep (30d): WHOOP primary, Fitbit fallback — same merge as Recovery
-  const sleepByDay30 = new Map<string, number>();
-  for (const r of fitbit30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  for (const r of whoop30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  const mergedSleep30 = [...sleepByDay30.values()];
+  const sleepMinutes30 = whoop30
+    .map((r) => r.sleepMinutes)
+    .filter((m): m is number => m != null && m > 0);
   const sleepAvgMin =
-    mergedSleep30.length > 0
-      ? Math.round(mergedSleep30.reduce((a, v) => a + v, 0) / mergedSleep30.length)
+    sleepMinutes30.length > 0
+      ? Math.round(sleepMinutes30.reduce((a, v) => a + v, 0) / sleepMinutes30.length)
       : null;
 
   const rhrRows7 = whoopWeek.filter((r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0);
@@ -153,36 +138,18 @@ export default async function OverviewPage({
     mi: Number(d.mi.toFixed(2)),
   }));
 
-  const sleepByDay30Chart = new Map<string, { date: Date; minutes: number }>();
-  for (const r of fitbit30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0)
-      sleepByDay30Chart.set(isoDay(r.date), { date: r.date, minutes: r.sleepMinutes });
-  }
-  for (const r of whoop30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0)
-      sleepByDay30Chart.set(isoDay(r.date), { date: r.date, minutes: r.sleepMinutes });
-  }
-  const sleepData = [...sleepByDay30Chart.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, v]) => ({
-      day: formatZonedDateShort(v.date, tz),
-      hours: Number((v.minutes / 60).toFixed(1)),
+  const sleepData = whoop30
+    .filter((r) => r.sleepMinutes != null && r.sleepMinutes > 0)
+    .map((r) => ({
+      day: formatZonedDateShort(r.date, tz),
+      hours: Number(((r.sleepMinutes ?? 0) / 60).toFixed(1)),
     }));
 
-  const rhrByDay30 = new Map<string, { date: Date; bpm: number }>();
-  for (const r of fitbit30) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay30.set(isoDay(r.date), { date: r.date, bpm: r.restingHeartRateBpm });
-  }
-  for (const r of whoop30) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay30.set(isoDay(r.date), { date: r.date, bpm: r.restingHeartRateBpm });
-  }
-  const rhrData = [...rhrByDay30.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, v]) => ({
-      day: formatZonedDateShort(v.date, tz),
-      bpm: v.bpm,
+  const rhrData = whoop30
+    .filter((r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
+    .map((r) => ({
+      day: formatZonedDateShort(r.date, tz),
+      bpm: r.restingHeartRateBpm,
     }));
 
   const whoopRecStrainData = whoop30
@@ -241,7 +208,7 @@ export default async function OverviewPage({
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-        <StatCard title="Sleep (avg)" value={minutesToHhMm(sleepAvgMin)} hint="WHOOP + Fitbit · 30d" />
+        <StatCard title="Sleep (avg)" value={minutesToHhMm(sleepAvgMin)} hint="WHOOP · 30d" />
         <StatCard title="Resting HR" value={rhrAvg != null ? `${rhrAvg} bpm` : "—"} hint="WHOOP · 7d avg" />
         <StatCard
           title="Recovery"
@@ -279,13 +246,13 @@ export default async function OverviewPage({
           title="Sleep"
           description={
             sleepAvgMin != null
-              ? `WHOOP + Fitbit · ~${minutesToHhMm(sleepAvgMin)} avg · 30d`
+              ? `WHOOP · ~${minutesToHhMm(sleepAvgMin)} avg · 30d`
               : "No sleep in the last 30 days"
           }
         >
           <AreaChartView data={sleepData} xKey="day" yKey="hours" color={chartPalette.un} yUnit=" h" gradientId="sleep" />
         </ChartCard>
-        <ChartCard title="Resting heart rate" description="WHOOP + Fitbit · 30d">
+        <ChartCard title="Resting heart rate" description="WHOOP · 30d">
           <AreaChartView
             data={rhrData}
             xKey="day"

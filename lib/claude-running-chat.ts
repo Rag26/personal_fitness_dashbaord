@@ -1,10 +1,10 @@
-import { GoogleGenAI } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@/lib/db";
 import { fetchNormalizedRunsInRange, type NormalizedRun } from "@/lib/merged-runs";
 import { metersToMiles, paceSecondsPerMile } from "@/lib/units";
-import { assertGeminiTextOk } from "@/lib/gemini-output-guard";
+import { assertClaudeTextOk } from "@/lib/claude-output-guard";
 
-const MODEL = "gemini-3-flash-preview";
+const MODEL = "claude-sonnet-4-6";
 const MAX_HISTORY_MESSAGES = 12;
 
 type ChatMessage = {
@@ -18,9 +18,9 @@ type RunningChatPayload = {
 };
 
 function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-  return new GoogleGenAI({ apiKey });
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  return new Anthropic({ apiKey });
 }
 
 function isoDay(d: Date) {
@@ -119,7 +119,7 @@ async function getRunningContext(userId: string) {
 
 const SYSTEM_PROMPT = `You are a running coach chatbot inside a fitness dashboard.
 
-The user's primary wearable is WHOOP (recovery, strain; no step counts via API). Runs come from Strava in the summary stats; the detailed run list may still include historical Fitbit exercise logs. Use the provided 21-day training context as ground truth. Be concise, practical, and evidence-based.
+The user's wearable is WHOOP (recovery, strain; no step counts via API). Runs come from Strava. Use the provided 21-day training context as ground truth. Be concise, practical, and evidence-based.
 
 Rules:
 - Give specific, actionable advice tied to the user's numbers.
@@ -137,6 +137,13 @@ function looksTruncated(text: string) {
   const endsCleanly = /[.!?]"?$/.test(trimmed);
   const endsWithDanglingPunct = /[:;,]$/.test(trimmed);
   return !endsCleanly || endsWithDanglingPunct;
+}
+
+function extractText(message: Anthropic.Message): string {
+  for (const block of message.content) {
+    if (block.type === "text") return block.text.trim();
+  }
+  return "";
 }
 
 export async function generateRunningChatReply(
@@ -158,47 +165,53 @@ export async function generateRunningChatReply(
           .map((m) => `${m.role === "assistant" ? "Coach" : "User"}: ${m.content}`)
           .join("\n");
 
-  const ai = getClient();
+  const client = getClient();
   const basePrompt = [
     `Running context (last 21 days):\n${context}`,
     `Conversation so far:\n${transcript}`,
     `User question:\n${question}`,
   ].join("\n\n");
 
-  const response = await ai.models.generateContent({
+  const response = await client.messages.create({
     model: MODEL,
-    contents: basePrompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.5,
-      maxOutputTokens: 6000,
-    },
+    max_tokens: 6000,
+    temperature: 0.5,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: basePrompt }],
   });
 
-  let answer = response.text?.trim();
-  if (!answer) throw new Error("No response from Gemini");
-  assertGeminiTextOk(answer);
+  let answer = extractText(response);
+  if (!answer) throw new Error("No response from Claude");
+  assertClaudeTextOk(answer);
 
-  // Occasionally models stop mid-thought; request short continuation(s) when needed.
-  for (let i = 0; i < 2 && looksTruncated(answer); i++) {
-    const continuation = await ai.models.generateContent({
+  // Continue if the model hit max_tokens or visibly cut off mid-thought.
+  let truncated =
+    response.stop_reason === "max_tokens" || looksTruncated(answer);
+
+  for (let i = 0; i < 2 && truncated; i++) {
+    const continuation = await client.messages.create({
       model: MODEL,
-      contents: `${basePrompt}\n\nThe assistant response below was cut off mid-thought. Continue from the next word only, do not repeat prior text, use plain text, and end with complete punctuation.\n\n${answer}`,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.35,
-        maxOutputTokens: 250,
-      },
+      max_tokens: 250,
+      temperature: 0.35,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: `${basePrompt}\n\nThe assistant response below was cut off mid-thought. Continue from the next word only, do not repeat prior text, use plain text, and end with complete punctuation.\n\n${answer}`,
+        },
+      ],
     });
-    const extra = continuation.text?.trim();
+    const extra = extractText(continuation);
     if (!extra) break;
     answer = `${answer} ${extra}`.replace(/\s+/g, " ").trim();
+    truncated =
+      continuation.stop_reason === "max_tokens" || looksTruncated(answer);
   }
 
   if (looksTruncated(answer)) {
     answer = `${answer}.`;
   }
 
-  assertGeminiTextOk(answer);
+  assertClaudeTextOk(answer);
   return answer;
 }

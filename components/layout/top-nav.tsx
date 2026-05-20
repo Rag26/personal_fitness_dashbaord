@@ -37,10 +37,25 @@ const themes: { id: ThemeId; label: string; swatch: string }[] = [
 const SCROLL_TOP_SHOW_PX = 24;
 const SCROLL_DELTA_PX = 6;
 
-export function TopNav() {
+function initialsFor(firstName: string | null, lastName: string | null) {
+  const f = firstName?.trim()?.[0] ?? "";
+  const l = lastName?.trim()?.[0] ?? "";
+  const combined = `${f}${l}`.toUpperCase();
+  return combined || "?";
+}
+
+export function TopNav({
+  firstName,
+  lastName,
+}: {
+  firstName?: string | null;
+  lastName?: string | null;
+}) {
   const logoutFormRef = React.useRef<HTMLFormElement | null>(null);
   const lastScrollY = React.useRef(0);
   const { theme, setTheme, mode, toggleMode } = useTheme();
+  const displayName = firstName?.trim() || "Account";
+  const initials = initialsFor(firstName ?? null, lastName ?? null);
   /** Until true, keep profile visible so SSR + first client paint match (avoids hydration errors). */
   const [scrollReady, setScrollReady] = React.useState(false);
   const [showProfile, setShowProfile] = React.useState(true);
@@ -212,10 +227,10 @@ export function TopNav() {
               className="flex items-center gap-2.5 rounded-xl px-2 py-1.5 outline-none transition-colors hover:bg-[color:var(--ui-accent-soft)] focus-visible:ring-2 focus-visible:ring-[color:var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <Avatar>
-                <AvatarFallback>TJ</AvatarFallback>
+                <AvatarFallback>{initials}</AvatarFallback>
               </Avatar>
               <div className="hidden text-left text-sm md:block">
-                <div className="font-medium leading-none text-stone-900">Tanay</div>
+                <div className="font-medium leading-none text-stone-900">{displayName}</div>
                 <div className="mt-1 text-xs text-stone-500">Personal</div>
               </div>
             </button>

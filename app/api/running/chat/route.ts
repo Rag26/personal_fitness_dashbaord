@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUserId } from "@/lib/auth";
-import { generateRunningChatReply } from "@/lib/gemini-running-chat";
+import { generateRunningChatReply } from "@/lib/claude-running-chat";
 
 const BodySchema = z.object({
   message: z.string().min(1).max(1200),

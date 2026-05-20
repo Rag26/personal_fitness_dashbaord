@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 
 import { requireUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { generateAiInsights } from "@/lib/gemini-insights";
+import { generateAiInsights } from "@/lib/claude-insights";
 
 export async function POST() {
   try {

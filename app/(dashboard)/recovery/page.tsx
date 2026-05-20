@@ -11,10 +11,6 @@ import { normalizeUserTimezone } from "@/lib/user-timezone";
 
 export const dynamic = "force-dynamic";
 
-function isoDay(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 export default async function RecoveryPage() {
   const userId = await requireUserId();
   const userTz = await prisma().user.findUnique({
@@ -27,27 +23,7 @@ export default async function RecoveryPage() {
   const start7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const start30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-  const [week, month, whoopWeek, whoopMonth] = await Promise.all([
-    prisma().dailyFitbitStat.findMany({
-      where: { userId, date: { gte: start7 } },
-      select: {
-        date: true,
-        sleepMinutes: true,
-        sleepEfficiency: true,
-        restingHeartRateBpm: true,
-      },
-      orderBy: { date: "asc" },
-    }),
-    prisma().dailyFitbitStat.findMany({
-      where: { userId, date: { gte: start30 } },
-      select: {
-        date: true,
-        sleepMinutes: true,
-        sleepEfficiency: true,
-        restingHeartRateBpm: true,
-      },
-      orderBy: { date: "asc" },
-    }),
+  const [whoopWeek, whoopMonth] = await Promise.all([
     prisma().dailyWhoopStat.findMany({
       where: { userId, date: { gte: start7 } },
       select: {
@@ -79,37 +55,18 @@ export default async function RecoveryPage() {
     }),
   ]);
 
-  // Sleep average (30d): WHOOP primary, Fitbit fallback
-  const sleepByDay30 = new Map<string, number>();
-  for (const r of month) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  for (const r of whoopMonth) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDay30.set(isoDay(r.date), r.sleepMinutes);
-  }
-  const mergedSleep30 = [...sleepByDay30.values()];
+  const sleepMinutesAll = whoopMonth
+    .map((r) => r.sleepMinutes)
+    .filter((m): m is number => m != null && m > 0);
   const sleepAvgMin =
-    mergedSleep30.length > 0
-      ? Math.round(mergedSleep30.reduce((a, v) => a + v, 0) / mergedSleep30.length)
+    sleepMinutesAll.length > 0
+      ? Math.round(sleepMinutesAll.reduce((a, v) => a + v, 0) / sleepMinutesAll.length)
       : null;
 
-  const effRows = month.filter((r) => r.sleepEfficiency != null && r.sleepEfficiency > 0);
-  const sleepEffAvg =
-    effRows.length > 0
-      ? Math.round(effRows.reduce((a, r) => a + (r.sleepEfficiency ?? 0), 0) / effRows.length)
-      : null;
-
-  const rhrByDay7 = new Map<string, number>();
-  for (const r of week) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0) rhrByDay7.set(isoDay(r.date), r.restingHeartRateBpm);
-  }
-  for (const r of whoopWeek) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0) rhrByDay7.set(isoDay(r.date), r.restingHeartRateBpm);
-  }
-  const mergedRhr7 = [...rhrByDay7.values()];
+  const rhrRows7 = whoopWeek.filter((r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0);
   const rhrAvg =
-    mergedRhr7.length > 0
-      ? Math.round(mergedRhr7.reduce((a, v) => a + v, 0) / mergedRhr7.length)
+    rhrRows7.length > 0
+      ? Math.round(rhrRows7.reduce((a, r) => a + (r.restingHeartRateBpm ?? 0), 0) / rhrRows7.length)
       : null;
 
   const weightRows30 = whoopMonth.filter((r) => r.weightKg != null && r.weightKg > 0);
@@ -135,45 +92,6 @@ export default async function RecoveryPage() {
       ? wSleepPerf.reduce((a, r) => a + (r.sleepPerformancePct ?? 0), 0) / wSleepPerf.length
       : null;
 
-  const sleepByDay30Chart = new Map<string, { date: Date; minutes: number }>();
-  for (const r of month) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0)
-      sleepByDay30Chart.set(isoDay(r.date), { date: r.date, minutes: r.sleepMinutes });
-  }
-  for (const r of whoopMonth) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0)
-      sleepByDay30Chart.set(isoDay(r.date), { date: r.date, minutes: r.sleepMinutes });
-  }
-  const sleepData = [...sleepByDay30Chart.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, v]) => ({
-      day: formatZonedDateShort(v.date, tz),
-      hours: Number((v.minutes / 60).toFixed(1)),
-    }));
-
-  const effData = month
-    .filter((r) => r.sleepEfficiency != null && r.sleepEfficiency > 0)
-    .map((r) => ({
-      day: formatZonedDateShort(r.date, tz),
-      efficiency: r.sleepEfficiency,
-    }));
-
-  const rhrByDay30 = new Map<string, { date: Date; bpm: number }>();
-  for (const r of month) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay30.set(isoDay(r.date), { date: r.date, bpm: r.restingHeartRateBpm });
-  }
-  for (const r of whoopMonth) {
-    if (r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
-      rhrByDay30.set(isoDay(r.date), { date: r.date, bpm: r.restingHeartRateBpm });
-  }
-  const rhrData = [...rhrByDay30.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, v]) => ({
-      day: formatZonedDateShort(v.date, tz),
-      bpm: v.bpm,
-    }));
-
   const weightData = whoopMonth
     .filter((r) => r.weightKg != null && r.weightKg > 0)
     .map((r) => ({
@@ -181,8 +99,12 @@ export default async function RecoveryPage() {
       lb: Number(kgToLb(r.weightKg!).toFixed(1)),
     }));
 
-  const effMin =
-    effData.length > 0 ? Math.min(...effData.map((d) => d.efficiency ?? 100)) : 0;
+  const rhrData = whoopMonth
+    .filter((r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0)
+    .map((r) => ({
+      day: formatZonedDateShort(r.date, tz),
+      bpm: r.restingHeartRateBpm,
+    }));
 
   const whoopRecStrainData = whoopMonth
     .filter((r) => r.recoveryScore != null || r.strain != null)
@@ -241,15 +163,14 @@ export default async function RecoveryPage() {
             value={whoopSleepPerfAvg != null ? `${Math.round(whoopSleepPerfAvg)}%` : "—"}
             hint="WHOOP · 30-day avg"
           />
-          <StatCard title="Sleep avg" value={minutesToHhMm(sleepAvgMin)} hint="WHOOP + Fitbit · 30d" />
+          <StatCard title="Sleep avg" value={minutesToHhMm(sleepAvgMin)} hint="WHOOP · 30d" />
         </section>
       </div>
 
       <div>
         <p className="mb-3 text-xs font-medium tracking-wider text-stone-500 uppercase">Body &amp; heart rate</p>
-        <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <StatCard title="Resting HR" value={rhrAvg != null ? `${rhrAvg} bpm` : "—"} hint="WHOOP + Fitbit · 7d avg" />
-          <StatCard title="Sleep efficiency" value={sleepEffAvg != null ? `${sleepEffAvg}%` : "—"} hint="Fitbit · 30d" />
+        <section className="grid gap-4 md:grid-cols-2">
+          <StatCard title="Resting HR" value={rhrAvg != null ? `${rhrAvg} bpm` : "—"} hint="WHOOP · 7d avg" />
           <StatCard
             title="Weight (30d avg)"
             value={weightAvgLb != null ? `${weightAvgLb.toFixed(1)} lb` : "—"}
@@ -326,29 +247,9 @@ export default async function RecoveryPage() {
       </div>
 
       <div>
-        <p className="mb-3 text-xs font-medium tracking-wider text-stone-500 uppercase">Sleep &amp; heart rate · merged</p>
-        <section className="grid gap-4 lg:grid-cols-2">
-          <ChartCard title="Sleep duration" description="WHOOP + Fitbit · hours per night · last 30 days">
-            <AreaChartView data={sleepData} xKey="day" yKey="hours" color={chartPalette.un} yUnit=" h" gradientId="sleep-rec" />
-          </ChartCard>
-          <ChartCard title="Sleep efficiency" description="Fitbit restfulness (historical) · last 30 days">
-            <AreaChartView
-              data={effData}
-              xKey="day"
-              yKey="efficiency"
-              color={chartPalette.adobe}
-              yUnit="%"
-              gradientId="eff"
-              yDomain={effData.length > 0 ? [Math.max(0, effMin - 5), 100] : [0, 100]}
-            />
-          </ChartCard>
-        </section>
-      </div>
-
-      <div>
         <p className="mb-3 text-xs font-medium tracking-wider text-stone-500 uppercase">Resting heart rate</p>
-        <section className="grid gap-4 lg:grid-cols-2">
-          <ChartCard title="Resting heart rate" description="WHOOP + Fitbit · 30-day trend" className="lg:col-span-2">
+        <section className="grid gap-4">
+          <ChartCard title="Resting heart rate" description="WHOOP · 30-day trend">
             <AreaChartView
               data={rhrData}
               xKey="day"

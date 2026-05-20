@@ -12,8 +12,8 @@
     "prisma:migrate": "prisma migrate dev"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.97.1",
     "@fontsource/inter": "^5.2.8",
-    "@google/genai": "^1.47.0",
     "@prisma/adapter-pg": "^7.6.0",
     "@prisma/client": "^7.6.0",
     "@radix-ui/react-avatar": "^1.1.11",

@@ -6,8 +6,6 @@ import { prisma } from "@/lib/db";
 import { createSession } from "@/lib/auth";
 import { getValidStravaAccessTokenForUser } from "@/lib/strava";
 import { syncStravaActivitiesWithLog } from "@/lib/strava-sync";
-import { getValidFitbitAccessTokenForUser } from "@/lib/fitbit";
-import { syncFitbitDailyStatsWithLog } from "@/lib/fitbit-sync";
 import { getValidWhoopAccessTokenForUser } from "@/lib/whoop";
 import { syncWhoopDailyStatsWithLog } from "@/lib/whoop-sync";
 
@@ -45,13 +43,9 @@ export async function POST(req: Request) {
 
   await createSession(user.id);
 
-  const [stravaAccount, fitbitAccount, whoopAccount] = await Promise.all([
+  const [stravaAccount, whoopAccount] = await Promise.all([
     prisma().connectedAccount.findUnique({
       where: { userId_provider: { userId: user.id, provider: "STRAVA" } },
-      select: { id: true, isActive: true },
-    }),
-    prisma().connectedAccount.findUnique({
-      where: { userId_provider: { userId: user.id, provider: "FITBIT" } },
       select: { id: true, isActive: true },
     }),
     prisma().connectedAccount.findUnique({
@@ -66,15 +60,6 @@ export async function POST(req: Request) {
       connectedAccountId: stravaAccount.id,
       days: 90,
       getAccessToken: () => getValidStravaAccessTokenForUser(user.id),
-    }).catch(() => {});
-  }
-
-  if (fitbitAccount?.isActive) {
-    void syncFitbitDailyStatsWithLog({
-      userId: user.id,
-      connectedAccountId: fitbitAccount.id,
-      days: 90,
-      getAccessToken: () => getValidFitbitAccessTokenForUser(user.id),
     }).catch(() => {});
   }
 

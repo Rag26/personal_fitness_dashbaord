@@ -14,25 +14,22 @@ export function looksLikeHtmlErrorPayload(text: string) {
   if (/^<!doctype html/i.test(t)) return true;
   if (/^<html[\s>]/i.test(t)) return true;
   if (/<head[\s>]/i.test(t) && /<body[\s>]/i.test(t)) return true;
-  // Common gateway / hosting error bodies that sometimes come back as HTML-ish text.
   if (/<(title|h1)[^>]*>\s*(4\d{2}|5\d{2})/i.test(t)) return true;
   return false;
 }
 
-export function coerceGeminiErrorMessage(rawText: string) {
+export function coerceClaudeErrorMessage(rawText: string) {
   const preview = stripTagsPreview(rawText, 160);
-  // Avoid leaking raw HTML; show a short hint if present.
   const hint = preview ? ` (${preview})` : "";
   return `AI service returned an unexpected response. Please try again.${hint}`;
 }
 
 /**
- * Guard against cases where the model endpoint returns an HTML error page (or similar),
- * which would otherwise get displayed in the UI as gibberish.
+ * Guard against the rare case where text reaches us as an HTML error page
+ * (e.g. a gateway 5xx surfaced as a body string instead of a thrown SDK error).
  */
-export function assertGeminiTextOk(text: string) {
+export function assertClaudeTextOk(text: string) {
   if (looksLikeHtmlErrorPayload(text)) {
-    throw new Error(coerceGeminiErrorMessage(text));
+    throw new Error(coerceClaudeErrorMessage(text));
   }
 }
-

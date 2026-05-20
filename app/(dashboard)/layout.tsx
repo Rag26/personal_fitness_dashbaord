@@ -18,12 +18,16 @@ export default async function DashboardLayout({
 }) {
   const userId = await getCurrentUserId();
   let timeZone = "UTC";
+  let firstName: string | null = null;
+  let lastName: string | null = null;
   if (userId) {
     const user = await prisma().user.findUnique({
       where: { id: userId },
-      select: { timezone: true },
+      select: { timezone: true, firstName: true, lastName: true },
     });
     timeZone = normalizeUserTimezone(user?.timezone);
+    firstName = user?.firstName ?? null;
+    lastName = user?.lastName ?? null;
   }
 
   return (
@@ -36,7 +40,7 @@ export default async function DashboardLayout({
           />
           <Sidebar />
           <div className="relative flex min-w-0 flex-1 flex-col">
-            <TopNav />
+            <TopNav firstName={firstName} lastName={lastName} />
             <main className="flex-1 px-4 py-8 md:px-8 md:pl-6">{children}</main>
           </div>
         </div>

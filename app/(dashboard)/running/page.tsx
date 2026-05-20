@@ -270,7 +270,7 @@ export default async function RunningPage({
         <ChartCard title="Distance per run" description="Miles per run">
           <BarChartView data={distPerRun} xKey="date" yKey="mi" color={chartPalette.amazon} yUnit=" mi" />
         </ChartCard>
-        <ChartCard title="Heart rate" description="Per run · Strava & Fitbit logs with HR">
+        <ChartCard title="Heart rate" description="Per run · Strava runs with HR">
           <MultiLineChartView
             data={hrData}
             xKey="date"
@@ -361,7 +361,7 @@ export default async function RunningPage({
       <section>
         <ChartCard
           title="Recent runs"
-          description="Last 30 runs (Strava + historical Fitbit logs), newest first. Click a Strava run for HR zones and route."
+          description="Last 30 Strava runs, newest first. Click a run for HR zones and route."
           contentClassName="pt-0"
         >
           <details className="mb-3 rounded-2xl border border-[color:var(--color-border-subtle)] bg-card/60 px-4 py-3">

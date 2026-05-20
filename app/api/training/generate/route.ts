@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { requireUserId } from "@/lib/auth";
-import { generateTrainingPlanForTwoWeeks } from "@/lib/gemini-training-plan";
+import { generateTrainingPlanForTwoWeeks } from "@/lib/claude-training-plan";
 import {
   formatZonedDateKey,
   localCalendarParts,

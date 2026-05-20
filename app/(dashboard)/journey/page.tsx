@@ -13,10 +13,6 @@ import { normalizeUserTimezone } from "@/lib/user-timezone";
 
 export const dynamic = "force-dynamic";
 
-function isoDay(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 function weekStartMondayUtc(date: Date) {
   const d = new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0),
@@ -41,66 +37,39 @@ export default async function JourneyPage() {
 
   const threeYearsAgo = new Date(Date.UTC(now.getUTCFullYear() - 3, 0, 1));
 
-  const [
-    snapshots,
-    whoopLast30,
-    fitbitSleep30,
-    whoopSleep30,
-    allFitbitSleep,
-    allWhoopSleep,
-    allWhoopDaily,
-  ] = await Promise.all([
-      prisma().monthlyFitnessSnapshot.findMany({
-        where: { userId },
-        orderBy: [{ year: "asc" }, { month: "asc" }],
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: winStart, lte: winEnd } },
-        select: { recoveryScore: true },
-      }),
-      prisma().dailyFitbitStat.findMany({
-        where: { userId, date: { gte: winStart, lte: winEnd } },
-        select: { date: true, sleepMinutes: true },
-        orderBy: { date: "asc" },
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: winStart, lte: winEnd } },
-        select: { date: true, sleepMinutes: true },
-        orderBy: { date: "asc" },
-      }),
-      prisma().dailyFitbitStat.findMany({
-        where: { userId, date: { gte: threeYearsAgo } },
-        select: { date: true, sleepMinutes: true },
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: threeYearsAgo } },
-        select: { date: true, sleepMinutes: true },
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: threeYearsAgo } },
-        select: {
-          date: true,
-          weightKg: true,
-          recoveryScore: true,
-          strain: true,
-          hrvRmssdMs: true,
-        },
-      }),
-    ]);
+  const [snapshots, whoopLast30, whoopSleep30, allWhoopDaily] = await Promise.all([
+    prisma().monthlyFitnessSnapshot.findMany({
+      where: { userId },
+      orderBy: [{ year: "asc" }, { month: "asc" }],
+    }),
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, date: { gte: winStart, lte: winEnd } },
+      select: { recoveryScore: true },
+    }),
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, date: { gte: winStart, lte: winEnd } },
+      select: { date: true, sleepMinutes: true },
+      orderBy: { date: "asc" },
+    }),
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, date: { gte: threeYearsAgo } },
+      select: {
+        date: true,
+        sleepMinutes: true,
+        weightKg: true,
+        recoveryScore: true,
+        strain: true,
+        hrvRmssdMs: true,
+      },
+    }),
+  ]);
 
-  const sleepByDayMerged = new Map<string, number>();
-  for (const r of allFitbitSleep) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDayMerged.set(isoDay(r.date), r.sleepMinutes);
-  }
-  for (const r of allWhoopSleep) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleepByDayMerged.set(isoDay(r.date), r.sleepMinutes);
-  }
   const sleepMonthAgg = new Map<string, { sumMin: number; n: number }>();
-  for (const [dayStr, minutes] of sleepByDayMerged) {
-    const d = new Date(`${dayStr}T12:00:00.000Z`);
-    const key = `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`;
+  for (const r of allWhoopDaily) {
+    if (r.sleepMinutes == null || r.sleepMinutes <= 0) continue;
+    const key = `${r.date.getUTCFullYear()}-${r.date.getUTCMonth() + 1}`;
     const cur = sleepMonthAgg.get(key) ?? { sumMin: 0, n: 0 };
-    cur.sumMin += minutes;
+    cur.sumMin += r.sleepMinutes;
     cur.n += 1;
     sleepMonthAgg.set(key, cur);
   }
@@ -246,14 +215,9 @@ export default async function JourneyPage() {
       ? Math.round(rec30.reduce((a, r) => a + (r.recoveryScore ?? 0), 0) / rec30.length)
       : null;
 
-  const sleep30merge = new Map<string, number>();
-  for (const r of fitbitSleep30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleep30merge.set(isoDay(r.date), r.sleepMinutes);
-  }
-  for (const r of whoopSleep30) {
-    if (r.sleepMinutes != null && r.sleepMinutes > 0) sleep30merge.set(isoDay(r.date), r.sleepMinutes);
-  }
-  const sleep30vals = [...sleep30merge.values()];
+  const sleep30vals = whoopSleep30
+    .map((r) => r.sleepMinutes)
+    .filter((m): m is number => m != null && m > 0);
   const latestSleepAvgMin =
     sleep30vals.length > 0
       ? Math.round(sleep30vals.reduce((a, v) => a + v, 0) / sleep30vals.length)
@@ -292,7 +256,7 @@ export default async function JourneyPage() {
         <StatCard
           title="Sleep (avg)"
           value={latestSleepAvgMin != null ? minutesToHhMm(latestSleepAvgMin) : "—"}
-          hint="WHOOP + Fitbit · last 30 UTC days"
+          hint="WHOOP · last 30 UTC days"
         />
         <StatCard
           title="WHOOP recovery"
@@ -335,7 +299,7 @@ export default async function JourneyPage() {
       <section className="grid gap-4 lg:grid-cols-2">
         <ChartCard
           title="Sleep (monthly average)"
-          description="WHOOP + Fitbit · merged nightly sleep, averaged per month"
+          description="WHOOP · nightly sleep, averaged per month"
         >
           <AreaChartView
             data={sleepHrs}

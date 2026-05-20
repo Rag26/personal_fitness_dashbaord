@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 import { fetchStravaRunsInRange } from "@/lib/merged-runs";
 import { metersToMiles, paceSecondsPerMile } from "@/lib/units";
 import {
@@ -6,14 +6,14 @@ import {
   localCalendarParts,
   zonedDatePlusDays,
 } from "@/lib/zoned-calendar";
-import { assertGeminiTextOk } from "@/lib/gemini-output-guard";
+import { assertClaudeTextOk } from "@/lib/claude-output-guard";
 
-const MODEL = "gemini-3-flash-preview";
+const MODEL = "claude-sonnet-4-6";
 
 function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-  return new GoogleGenAI({ apiKey });
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  return new Anthropic({ apiKey });
 }
 
 export type PlannedSessionType = "run" | "rest";
@@ -35,30 +35,51 @@ export type TrainingPlanPayload = {
   days: PlannedDay[];
 };
 
-const SYSTEM_PROMPT = `You are an expert **running-only** coach. The athlete logs runs on Strava. You must build a **two-week** schedule of running workouts only (no strength sessions, no cross-training blocks unless framed as optional rest-day walking).
-
-You must output **only valid JSON** (no markdown fences) matching this shape:
-
-{
-  "weekLabel": "short label e.g. Base build Apr 6–19",
-  "coachNote": "1–2 sentences; include that this is not medical advice",
-  "days": [
-    {
-      "date": "YYYY-MM-DD",
-      "sessions": [
-        { "type": "run", "title": "Easy 5 mi", "details": "Zone 2, conversational" }
-      ]
-    }
-  ]
-}
+const SYSTEM_PROMPT = `You are an expert running-only coach. The athlete logs runs on Strava. You must build a two-week schedule of running workouts only (no strength sessions, no cross-training blocks unless framed as optional rest-day walking).
 
 Rules:
-- You will be given **exactly fourteen dates** (Monday week 1 → Sunday week 2). Include **one object per date**, same order, **matching each date string exactly**.
-- Each day: **1–2 running sessions max**, OR **one** session with "type": "rest" for full rest (title e.g. "Rest", details = mobility or easy walk optional).
-- "run" sessions: be specific (distance **or** duration, terrain if relevant, intensity: easy / steady / tempo / intervals / long run). Respect the athlete's Strava history and any **user notes** (injuries, reduce volume, etc.).
-- If user notes mention injury or dial-back, **reduce volume and intensity** and add extra rest or easy days; never contradict explicit limitations.
-- Do not invent a diagnosed injury. If notes are vague, ask nothing—just apply conservative load.
-- **Never** use type "lift" or non-running strength prescriptions. If you would have suggested lifting, use "rest" or an easy run instead.`;
+- You will be given exactly fourteen dates (Monday week 1 → Sunday week 2). Include one object per date, same order, matching each date string exactly.
+- Each day: 1–2 running sessions max, OR one session with "type": "rest" for full rest (title e.g. "Rest", details = mobility or easy walk optional).
+- "run" sessions: be specific (distance or duration, terrain if relevant, intensity: easy / steady / tempo / intervals / long run). Respect the athlete's Strava history and any user notes (injuries, reduce volume, etc.).
+- If user notes mention injury or dial-back, reduce volume and intensity and add extra rest or easy days; never contradict explicit limitations.
+- Do not invent a diagnosed injury. If notes are vague, just apply conservative load.
+- Never use type "lift" or non-running strength prescriptions. If you would have suggested lifting, use "rest" or an easy run instead.
+- "weekLabel" example: "Base build Apr 6–19".
+- "coachNote": 1–2 sentences; include that this is not medical advice.`;
+
+const PLAN_SCHEMA = {
+  type: "object",
+  properties: {
+    weekLabel: { type: "string" },
+    coachNote: { type: "string" },
+    days: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          sessions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["run", "rest"] },
+                title: { type: "string" },
+                details: { type: "string" },
+              },
+              required: ["type", "title", "details"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["date", "sessions"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["weekLabel", "days"],
+  additionalProperties: false,
+} as const;
 
 function isoDayUtc(d: Date) {
   return d.toISOString().slice(0, 10);
@@ -70,7 +91,6 @@ function normalizeSessionType(t: string): PlannedSessionType {
   return "rest";
 }
 
-/** Coerce legacy plans / model mistakes to run-only. */
 function coerceSessions(sessions: PlannedSession[]): PlannedSession[] {
   return sessions.map((s) => {
     if (s.type === "run" || s.type === "rest") return s;
@@ -291,30 +311,27 @@ export async function generateTrainingPlanForTwoWeeks(
       : `Athlete notes: (none provided)`,
   ].join("\n");
 
-  const ai = getClient();
-  const response = await ai.models.generateContent({
+  const client = getClient();
+  const response = await client.messages.create({
     model: MODEL,
-    contents: userPrompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.6,
-      maxOutputTokens: 8192,
+    max_tokens: 8192,
+    temperature: 0.6,
+    system: SYSTEM_PROMPT,
+    output_config: {
+      format: { type: "json_schema", schema: PLAN_SCHEMA },
     },
+    messages: [{ role: "user", content: userPrompt }],
   });
 
-  let text = response.text?.trim() ?? "";
-  assertGeminiTextOk(text);
-  if (text.startsWith("```")) {
-    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-  }
+  const textBlock = response.content.find((b) => b.type === "text");
+  const text = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+  assertClaudeTextOk(text);
 
   try {
     const parsed = JSON.parse(text) as unknown;
     return mergePlanToExpectedDays(expectedKeys, parsed);
   } catch {
-    // If the model returned an error-ish blob, surface a clean error instead of
-    // silently rendering a generic fallback plan.
-    assertGeminiTextOk(text);
+    assertClaudeTextOk(text);
     throw new Error("Could not parse AI plan response. Please try again.");
   }
 }

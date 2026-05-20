@@ -14,7 +14,6 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/journey") ||
     pathname.startsWith("/settings") ||
     pathname.startsWith("/api/strava") ||
-    pathname.startsWith("/api/fitbit") ||
     pathname.startsWith("/api/whoop") ||
     pathname.startsWith("/api/insights") ||
     pathname.startsWith("/api/nutrition");
@@ -24,7 +23,6 @@ export async function middleware(req: NextRequest) {
   // Allow OAuth callback to complete without being bounced (it will still persist against the logged-in user).
   if (
     pathname === "/api/strava/callback" ||
-    pathname === "/api/fitbit/callback" ||
     pathname === "/api/whoop/callback"
   ) {
     return NextResponse.next();

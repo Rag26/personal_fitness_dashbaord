@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { parseCachedAiNutritionInsightsJson } from "@/lib/gemini-nutrition-insights";
+import { parseCachedAiNutritionInsightsJson } from "@/lib/claude-nutrition-insights";
 
 export async function GET() {
   try {

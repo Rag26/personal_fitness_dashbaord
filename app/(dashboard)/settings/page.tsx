@@ -12,11 +12,9 @@ export const dynamic = "force-dynamic";
 
 type SettingsSearch = {
   strava?: string;
-  fitbit?: string;
   whoop?: string;
   reason?: string;
   stravaSync?: string;
-  fitbitSync?: string;
   whoopSync?: string;
   fetched?: string;
   upserted?: string;
@@ -58,18 +56,6 @@ export default async function SettingsPage({
     },
   });
 
-  const fitbit = await prisma().connectedAccount.findUnique({
-    where: { userId_provider: { userId, provider: "FITBIT" } },
-    select: {
-      isActive: true,
-      providerAccountId: true,
-      expiresAt: true,
-      scope: true,
-      lastSyncedAt: true,
-      updatedAt: true,
-    },
-  });
-
   const whoop = await prisma().connectedAccount.findUnique({
     where: { userId_provider: { userId, provider: "WHOOP" } },
     select: {
@@ -83,25 +69,10 @@ export default async function SettingsPage({
   });
 
   const isConnected = Boolean(strava?.isActive);
-  const fitbitConnected = Boolean(fitbit?.isActive);
   const whoopConnected = Boolean(whoop?.isActive);
   const recentActivities = isConnected
     ? await getRecentStravaActivities({ days: 30, perPage: 5 })
     : null;
-
-  const recentFitbitDays =
-    fitbitConnected
-      ? await prisma().dailyFitbitStat.findMany({
-          where: { userId },
-          orderBy: { date: "desc" },
-          take: 7,
-          select: {
-            date: true,
-            sleepMinutes: true,
-            restingHeartRateBpm: true,
-          },
-        })
-      : [];
 
   const recentWhoopDays =
     whoopConnected
@@ -131,13 +102,10 @@ export default async function SettingsPage({
       </div>
 
       {(sp.strava === "connected" ||
-        sp.fitbit === "connected" ||
         sp.whoop === "connected" ||
         sp.strava === "error" ||
-        sp.fitbit === "error" ||
         sp.whoop === "error" ||
         sp.stravaSync ||
-        sp.fitbitSync ||
         sp.whoopSync ||
         sp.profile ||
         sp.password) && (
@@ -145,21 +113,12 @@ export default async function SettingsPage({
           {sp.strava === "connected" ? (
             <p>Strava connected successfully.</p>
           ) : null}
-          {sp.fitbit === "connected" ? (
-            <p>Fitbit connected successfully.</p>
-          ) : null}
           {sp.whoop === "connected" ? (
             <p>WHOOP connected successfully.</p>
           ) : null}
           {sp.strava === "error" ? (
             <p className="text-[color:var(--ui-danger)]">
               Strava connection failed
-              {sp.reason ? `: ${sp.reason}` : ""}.
-            </p>
-          ) : null}
-          {sp.fitbit === "error" ? (
-            <p className="text-[color:var(--ui-danger)]">
-              Fitbit connection failed
               {sp.reason ? `: ${sp.reason}` : ""}.
             </p>
           ) : null}
@@ -180,18 +139,6 @@ export default async function SettingsPage({
           ) : null}
           {sp.stravaSync === "not_connected" ? (
             <p className="text-[color:var(--ui-danger)]">Connect Strava before syncing.</p>
-          ) : null}
-          {sp.fitbitSync === "ok" ? (
-            <p>
-              Fitbit sync finished (fetched {sp.fetched ?? "—"}, saved{" "}
-              {sp.upserted ?? "—"} daily rows).
-            </p>
-          ) : null}
-          {sp.fitbitSync === "error" ? (
-            <p className="text-[color:var(--ui-danger)]">Fitbit sync failed.</p>
-          ) : null}
-          {sp.fitbitSync === "not_connected" ? (
-            <p className="text-[color:var(--ui-danger)]">Connect Fitbit before syncing.</p>
           ) : null}
           {sp.whoopSync === "ok" ? (
             <p>
@@ -300,86 +247,6 @@ export default async function SettingsPage({
             </div>
           ) : null}
 
-          <div className="border-t border-[color:var(--color-border-subtle)] pt-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="text-sm font-medium text-stone-900">Fitbit</div>
-                <div className="mt-1 text-sm text-stone-500">
-                  {fitbitConnected
-                    ? `Connected (user ${fitbit?.providerAccountId})`
-                    : "Not connected"}
-                </div>
-                {fitbitConnected ? (
-                  <div className="mt-1 text-xs text-stone-500">
-                    Scope: {fitbit?.scope ?? "unknown"} · Expires:{" "}
-                    {fitbit?.expiresAt
-                      ? formatZonedDateTimeMedium(fitbit.expiresAt, tz)
-                      : "unknown"}
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-2">
-                <Link
-                  href="/api/fitbit/connect"
-                  className="inline-flex h-9 items-center justify-center rounded-xl bg-stone-900 px-4 text-sm font-medium text-white transition-colors hover:bg-stone-800"
-                >
-                  {fitbitConnected ? "Reconnect Fitbit" : "Connect Fitbit"}
-                </Link>
-                {fitbitConnected ? (
-                  <form action="/api/fitbit/sync?days=90" method="post">
-                    <button className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/15 bg-card/75 px-4 text-sm font-medium text-stone-700 transition-all hover:border-orange-500/40 hover:bg-orange-50/75 hover:text-orange-700">
-                      Sync now
-                    </button>
-                  </form>
-                ) : null}
-              </div>
-            </div>
-            {fitbitConnected ? (
-              <div className="mt-4 space-y-3">
-                <div className="text-xs text-stone-500">
-                  Last updated: {fitbit?.updatedAt ? formatZonedDateTimeMedium(fitbit.updatedAt, tz) : "—"} · Last
-                  synced:{" "}
-                  {fitbit?.lastSyncedAt
-                    ? formatZonedDateTimeMedium(fitbit.lastSyncedAt, tz)
-                    : "never"}
-                  . Each sync also pulls{" "}
-                  <span className="font-medium text-stone-700">
-                    Fitbit exercise logs
-                  </span>{" "}
-                  (runs from your tracker or app) so they show on Running / Journey
-                  even if they never existed in Strava.
-                </div>
-                <div className="rounded-xl border border-amber-900/10 bg-card/55 p-4">
-                  <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                    Recent Fitbit daily rows (historical · latest 7)
-                  </div>
-                  {recentFitbitDays.length > 0 ? (
-                    <ul className="mt-3 space-y-1.5 text-sm">
-                      {recentFitbitDays.map((row) => (
-                        <li
-                          key={row.date.toISOString()}
-                          className="flex flex-wrap items-center justify-between gap-2"
-                        >
-                          <span className="text-stone-600">
-                            {formatZonedDateShort(row.date, tz)}
-                          </span>
-                          <span className="text-xs text-stone-500">
-                            sleep {minutesToHhMm(row.sleepMinutes)}
-                            {row.restingHeartRateBpm != null ? ` · RHR ${row.restingHeartRateBpm}` : ""}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="mt-3 text-sm text-stone-500">
-                      No Fitbit rows yet — run a sync after connecting.
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
           <div className="border-t border-amber-900/10 pt-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -470,9 +337,7 @@ export default async function SettingsPage({
           <div className="border-t border-amber-900/10 pt-6">
             <div className="text-sm font-medium text-stone-900">Long-term backfill</div>
             <p className="mt-1 text-xs text-stone-600 leading-relaxed">
-              Everything you sync is kept in the database. Strava can backfill years. Fitbit daily stats
-              deep sync is limited to ~6 months; the same full Fitbit sync also pulls up to ~12 months of{" "}
-              <span className="font-medium text-stone-800">logged runs</span> from Fitbit (exercise history).
+              Everything you sync is kept in the database. Strava can backfill years.
               WHOOP recovery sync is limited to about six months per request.
               Monthly rollups on the{" "}
               <Link
@@ -491,16 +356,6 @@ export default async function SettingsPage({
                     className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/20 bg-amber-50/80 px-3 text-xs font-medium text-stone-800 transition-all hover:border-orange-500/40 hover:bg-amber-50"
                   >
                     Strava · ~3 years
-                  </button>
-                </form>
-              ) : null}
-              {fitbitConnected ? (
-                <form action="/api/fitbit/sync?days=183" method="post">
-                  <button
-                    type="submit"
-                    className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/20 bg-amber-50/80 px-3 text-xs font-medium text-stone-800 transition-all hover:border-orange-500/40 hover:bg-amber-50"
-                  >
-                    Fitbit · ~6 months
                   </button>
                 </form>
               ) : null}

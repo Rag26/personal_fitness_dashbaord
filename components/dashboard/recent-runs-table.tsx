@@ -25,8 +25,8 @@ const RunRouteMap = dynamic(() => import("./run-route-map"), {
 
 export type RecentRunRow = {
   rowKey: string;
-  source: "STRAVA" | "FITBIT";
-  providerActivityId: string | null;
+  source: "STRAVA";
+  providerActivityId: string;
   tag: RunTag;
   exertion: { score10: number | null; level: string } | null;
   /** Bullet-point reasoning behind the classification at this run's point in time. */
@@ -398,22 +398,11 @@ function ExpandedPanel({
   );
 }
 
-function SourcePill({ source }: { source: "STRAVA" | "FITBIT" }) {
-  const isStrava = source === "STRAVA";
+function SourcePill() {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase ${
-        isStrava
-          ? "bg-[color:var(--ui-accent-soft)] text-[color:var(--color-text-secondary)]"
-          : "bg-stone-200/60 text-stone-600"
-      }`}
-    >
-      <span
-        className={`inline-block h-1.5 w-1.5 rounded-full ${
-          isStrava ? "bg-[color:var(--ui-accent)]" : "bg-stone-400"
-        }`}
-      />
-      {isStrava ? "Strava" : "Fitbit"}
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--ui-accent-soft)] px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase text-[color:var(--color-text-secondary)]">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--ui-accent)]" />
+      Strava
     </span>
   );
 }
@@ -590,7 +579,7 @@ export function RecentRunsTable({ runs, tz }: { runs: RecentRunRow[]; tz: string
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center gap-2">
                           <RunTagBadge tag={tag} />
-                          <SourcePill source={r.source} />
+                          <SourcePill />
                           <ExertionPill exertion={r.exertion} />
                         </div>
                         <div className="truncate font-medium text-stone-900">{r.name}</div>

@@ -1,7 +1,7 @@
 import { Footprints, Moon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { PlannedSession, TrainingPlanPayload } from "@/lib/gemini-training-plan";
+import type { PlannedSession, TrainingPlanPayload } from "@/lib/claude-training-plan";
 
 const RUN =
   "bg-[color:color-mix(in_srgb,var(--ui-run)_22%,transparent)] text-[color:var(--color-text-primary)] ring-[color:color-mix(in_srgb,var(--ui-run)_42%,transparent)]";

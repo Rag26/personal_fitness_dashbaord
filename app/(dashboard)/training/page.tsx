@@ -9,7 +9,7 @@ import { requireUserId } from "@/lib/auth";
 import {
   mergePlanToExpectedDays,
   twoWeekDateKeysFromMonday,
-} from "@/lib/gemini-training-plan";
+} from "@/lib/claude-training-plan";
 import { formatZonedDateTimeMedium } from "@/lib/format-zoned";
 import { normalizeUserTimezone } from "@/lib/user-timezone";
 import {
@@ -98,7 +98,7 @@ export default async function TrainingPage({
               .
             </>
           ) : (
-            `Could not generate plan${sp.reason ? `: ${sp.reason}` : ""}. Check GEMINI_API_KEY and try again.`
+            `Could not generate plan${sp.reason ? `: ${sp.reason}` : ""}. Check ANTHROPIC_API_KEY and try again.`
           )}
         </div>
       ) : null}

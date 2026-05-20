@@ -137,7 +137,7 @@ export function AiInsights() {
               AI Coach Insights
             </h2>
             <p className="text-[11px] text-[color:var(--color-text-tertiary)]">
-              Powered by Gemini — not medical advice
+              Powered by Claude — not medical advice
             </p>
           </div>
         </div>

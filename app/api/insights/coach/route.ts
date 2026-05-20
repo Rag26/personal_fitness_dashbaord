@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 
 import { requireUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { parseCachedAiInsightsJson } from "@/lib/gemini-insights";
+import { parseCachedAiInsightsJson } from "@/lib/claude-insights";
 
 /**
- * Returns the last saved AI Coach payload without calling Gemini.
+ * Returns the last saved AI Coach payload without calling Claude.
  */
 export async function GET() {
   const userId = await requireUserId();

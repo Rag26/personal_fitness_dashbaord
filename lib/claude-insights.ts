@@ -1,17 +1,17 @@
 import type { Prisma } from "@prisma/client";
-import { GoogleGenAI } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@/lib/db";
 import { fetchStravaRunsInRange } from "@/lib/merged-runs";
 import { utcCalendarWindowBoundsMs } from "@/lib/calendar-range";
 import { metersToMiles, paceSecondsPerMile, kgToLb } from "@/lib/units";
-import { assertGeminiTextOk } from "@/lib/gemini-output-guard";
+import { assertClaudeTextOk } from "@/lib/claude-output-guard";
 
-const MODEL = "gemini-3-flash-preview";
+const MODEL = "claude-sonnet-4-6";
 
 function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-  return new GoogleGenAI({ apiKey });
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  return new Anthropic({ apiKey });
 }
 
 export type InsightSection = {
@@ -61,20 +61,35 @@ export function parseCachedAiInsightsJson(
   return { summary: o.summary, sections, generatedAt };
 }
 
-const monthlySnapshotSelectBase = {
+const INSIGHTS_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          emoji: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          priority: { type: "string", enum: ["high", "medium", "low"] },
+        },
+        required: ["emoji", "title", "body", "priority"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["summary", "sections"],
+  additionalProperties: false,
+} as const;
+
+const monthlySnapshotSelect = {
   year: true,
   month: true,
   runCount: true,
   runDistanceMeters: true,
   avgPaceSecPerMi: true,
-  avgSteps: true,
-  avgSleepMinutes: true,
-  avgRestingHr: true,
-  avgWeightKg: true,
-} as const;
-
-const monthlySnapshotSelectWithWhoop = {
-  ...monthlySnapshotSelectBase,
   avgWhoopRecovery: true,
   avgWhoopStrain: true,
   avgWhoopHrvMs: true,
@@ -84,42 +99,18 @@ const monthlySnapshotSelectWithWhoop = {
 
 export type MonthlySnapshotInsightRow =
   Prisma.MonthlyFitnessSnapshotGetPayload<{
-    select: typeof monthlySnapshotSelectWithWhoop;
+    select: typeof monthlySnapshotSelect;
   }>;
 
-/**
- * Stale `node_modules/@prisma/client` (e.g. dev server started before `prisma generate`)
- * rejects WHOOP snapshot fields — fall back to legacy select so insights still load.
- */
 async function fetchMonthlySnapshotsForInsights(
   userId: string,
 ): Promise<MonthlySnapshotInsightRow[]> {
-  const args = {
+  return prisma().monthlyFitnessSnapshot.findMany({
     where: { userId },
-    orderBy: [{ year: "desc" as const }, { month: "desc" as const }],
+    orderBy: [{ year: "desc" }, { month: "desc" }],
     take: 6,
-  };
-  try {
-    return await prisma().monthlyFitnessSnapshot.findMany({
-      ...args,
-      select: monthlySnapshotSelectWithWhoop,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (
-      msg.includes("Unknown field") ||
-      msg.includes("avgWhoop") ||
-      msg.includes("whoopDaysCount") ||
-      msg.includes("avgWhoopWeightKg")
-    ) {
-      const rows = await prisma().monthlyFitnessSnapshot.findMany({
-        ...args,
-        select: monthlySnapshotSelectBase,
-      });
-      return rows as MonthlySnapshotInsightRow[];
-    }
-    throw e;
-  }
+    select: monthlySnapshotSelect,
+  });
 }
 
 async function gatherUserData(userId: string) {
@@ -129,59 +120,39 @@ async function gatherUserData(userId: string) {
   const rangeEnd = new Date(endMs);
   const start7 = new Date(now.getTime() - 7 * 86_400_000);
 
-  const [runs30, fitbit30, whoop30, fitbit7, whoop7, monthlySnapshots] =
-    await Promise.all([
-      fetchStravaRunsInRange(userId, rangeStart, rangeEnd),
-      prisma().dailyFitbitStat.findMany({
-        where: { userId, date: { gte: rangeStart, lte: rangeEnd } },
-        select: {
-          date: true,
-          sleepMinutes: true,
-          sleepEfficiency: true,
-          restingHeartRateBpm: true,
-        },
-        orderBy: { date: "asc" },
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: rangeStart, lte: rangeEnd } },
-        select: {
-          date: true,
-          recoveryScore: true,
-          strain: true,
-          restingHeartRateBpm: true,
-          hrvRmssdMs: true,
-          spo2Percentage: true,
-          skinTempCelsius: true,
-          sleepMinutes: true,
-          sleepPerformancePct: true,
-          sleepEfficiencyPct: true,
-          sleepConsistencyPct: true,
-          weightKg: true,
-        },
-        orderBy: { date: "asc" },
-      }),
-      prisma().dailyFitbitStat.findMany({
-        where: { userId, date: { gte: start7 } },
-        select: {
-          date: true,
-          sleepMinutes: true,
-          restingHeartRateBpm: true,
-        },
-        orderBy: { date: "asc" },
-      }),
-      prisma().dailyWhoopStat.findMany({
-        where: { userId, date: { gte: start7 } },
-        select: {
-          date: true,
-          recoveryScore: true,
-          strain: true,
-          hrvRmssdMs: true,
-          sleepMinutes: true,
-        },
-        orderBy: { date: "asc" },
-      }),
-      fetchMonthlySnapshotsForInsights(userId),
-    ]);
+  const [runs30, whoop30, whoop7, monthlySnapshots] = await Promise.all([
+    fetchStravaRunsInRange(userId, rangeStart, rangeEnd),
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, date: { gte: rangeStart, lte: rangeEnd } },
+      select: {
+        date: true,
+        recoveryScore: true,
+        strain: true,
+        restingHeartRateBpm: true,
+        hrvRmssdMs: true,
+        spo2Percentage: true,
+        skinTempCelsius: true,
+        sleepMinutes: true,
+        sleepPerformancePct: true,
+        sleepEfficiencyPct: true,
+        sleepConsistencyPct: true,
+        weightKg: true,
+      },
+      orderBy: { date: "asc" },
+    }),
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, date: { gte: start7 } },
+      select: {
+        date: true,
+        recoveryScore: true,
+        strain: true,
+        hrvRmssdMs: true,
+        sleepMinutes: true,
+      },
+      orderBy: { date: "asc" },
+    }),
+    fetchMonthlySnapshotsForInsights(userId),
+  ]);
 
   const runsFiltered = runs30.filter(
     (r) => r.startAt.getTime() >= startMs && r.startAt.getTime() <= endMs,
@@ -189,9 +160,7 @@ async function gatherUserData(userId: string) {
 
   return {
     runs30: runsFiltered,
-    fitbit30,
     whoop30,
-    fitbit7,
     whoop7,
     monthlySnapshots: monthlySnapshots.reverse(),
   };
@@ -238,60 +207,6 @@ function buildDataSummary(data: Awaited<ReturnType<typeof gatherUserData>>) {
     );
   } else {
     lines.push(`## Running: no runs in the last 30 days.`);
-  }
-
-  // --- Fitbit ---
-  if (data.fitbit30.length > 0) {
-    lines.push(`\n## Fitbit daily stats — HISTORICAL (last 30 days, ${data.fitbit30.length} days with data)`);
-    const sleep = data.fitbit30.filter(
-      (r) => r.sleepMinutes != null && r.sleepMinutes > 0,
-    );
-    if (sleep.length > 0) {
-      const avgMin = Math.round(
-        sleep.reduce((a, r) => a + (r.sleepMinutes ?? 0), 0) / sleep.length,
-      );
-      const h = Math.floor(avgMin / 60);
-      const m = avgMin % 60;
-      lines.push(`- Avg sleep: ${h}h ${m}m (${sleep.length} nights)`);
-    }
-    const eff = data.fitbit30.filter(
-      (r) => r.sleepEfficiency != null && r.sleepEfficiency > 0,
-    );
-    if (eff.length > 0) {
-      const avgEff = Math.round(
-        eff.reduce((a, r) => a + (r.sleepEfficiency ?? 0), 0) / eff.length,
-      );
-      lines.push(`- Avg sleep efficiency: ${avgEff}%`);
-    }
-    const rhr = data.fitbit30.filter(
-      (r) => r.restingHeartRateBpm != null && r.restingHeartRateBpm > 0,
-    );
-    if (rhr.length > 0) {
-      const avgRhr = Math.round(
-        rhr.reduce((a, r) => a + (r.restingHeartRateBpm ?? 0), 0) / rhr.length,
-      );
-      const rhrFirst5 =
-        rhr.slice(0, 5).reduce((a, r) => a + (r.restingHeartRateBpm ?? 0), 0) /
-        Math.min(5, rhr.length);
-      const rhrLast5 =
-        rhr
-          .slice(-5)
-          .reduce((a, r) => a + (r.restingHeartRateBpm ?? 0), 0) /
-        Math.min(5, rhr.length);
-      lines.push(
-        `- RHR: avg ${avgRhr} bpm, early window avg ${Math.round(rhrFirst5)}, recent avg ${Math.round(rhrLast5)}`,
-      );
-    }
-    // 7-day micro view
-    if (data.fitbit7.length > 0) {
-      lines.push(`\n### Fitbit last 7 days (day-by-day)`);
-      for (const d of data.fitbit7) {
-        const parts = [fmt(d.date)];
-        if (d.sleepMinutes != null) parts.push(`sleep ${d.sleepMinutes}m`);
-        if (d.restingHeartRateBpm != null) parts.push(`RHR ${d.restingHeartRateBpm}`);
-        lines.push(`  ${parts.join(" · ")}`);
-      }
-    }
   }
 
   // --- WHOOP ---
@@ -391,17 +306,6 @@ function buildDataSummary(data: Awaited<ReturnType<typeof gatherUserData>>) {
         const ps = Math.round(s.avgPaceSecPerMi % 60);
         parts.push(`pace ${pm}:${String(ps).padStart(2, "0")}`);
       }
-      if (s.avgSteps != null)
-        parts.push(`Fitbit avg steps ${Math.round(s.avgSteps)} (historical)`);
-      if (s.avgSleepMinutes != null) {
-        const h = Math.floor(s.avgSleepMinutes / 60);
-        const m = Math.round(s.avgSleepMinutes % 60);
-        parts.push(`sleep ${h}h${m}m`);
-      }
-      if (s.avgRestingHr != null)
-        parts.push(`RHR ${Math.round(s.avgRestingHr)}`);
-      if (s.avgWeightKg != null)
-        parts.push(`Fitbit weight (historical) ${kgToLb(s.avgWeightKg).toFixed(1)} lb`);
       if (s.avgWhoopWeightKg != null)
         parts.push(`WHOOP weight avg ${kgToLb(s.avgWhoopWeightKg).toFixed(1)} lb`);
       if (s.avgWhoopRecovery != null)
@@ -419,33 +323,20 @@ function buildDataSummary(data: Awaited<ReturnType<typeof gatherUserData>>) {
   return lines.join("\n");
 }
 
-const SYSTEM_PROMPT = `You are an expert sports-science coach and wellness analyst integrated into a personal fitness dashboard. The user's primary wearable is WHOOP (recovery, strain, HRV, sleep, RHR, body weight from WHOOP body-measurement API). Runs come from Strava. Historical Fitbit data (sleep, RHR) may supplement older periods. WHOOP does not expose step counts via API — do not infer steps from WHOOP.
+const SYSTEM_PROMPT = `You are an expert sports-science coach and wellness analyst integrated into a personal fitness dashboard. The user's wearable is WHOOP (recovery, strain, HRV, sleep, RHR, body weight from WHOOP body-measurement API). Runs come from Strava. WHOOP does not expose step counts via API — do not infer steps.
 
-Your job is to analyze the data holistically and produce **actionable, specific insights**. Don't just restate numbers — interpret trends, spot correlations, and give concrete recommendations. Prioritize WHOOP data for recovery, sleep, and readiness analysis.
+Your job is to analyze the data holistically and produce actionable, specific insights. Don't just restate numbers — interpret trends, spot correlations, and give concrete recommendations. Prioritize WHOOP data for recovery, sleep, and readiness analysis.
 
-Respond with valid JSON matching this schema (no markdown fences, just raw JSON):
+Produce 5–8 sections covering: recovery status, training load, sleep quality, heart rate trends, body composition, consistency, and any cross-metric correlations you find.
 
-{
-  "summary": "2–3 sentence executive summary of the user's current fitness & recovery state",
-  "sections": [
-    {
-      "emoji": "single emoji that fits the topic",
-      "title": "Short title (3–6 words)",
-      "body": "2–4 sentences with specific insight and recommendation. Reference actual numbers from the data.",
-      "priority": "high | medium | low"
-    }
-  ]
-}
-
-Guidelines:
-- Produce 5–8 sections covering: recovery status, training load, sleep quality, heart rate trends, body composition, consistency, and any cross-metric correlations you find.
 - "high" priority = needs immediate attention or represents a significant finding.
 - "medium" = notable trend worth monitoring.
 - "low" = positive observation or minor note.
-- Use WHOOP HRV, recovery scores, and sleep metrics as the primary recovery signals.
-- Fitbit data is historical — use it for long-term trend context but note it's from an older period if relevant. Do not treat steps as a current KPI (WHOOP has no step API).
+- Use WHOOP HRV, recovery scores, and sleep metrics as the primary recovery signals. Do not treat steps as a KPI (WHOOP has no step API).
 - If a data source is missing, skip sections that depend on it — don't hallucinate.
 - Be encouraging but honest. Flag overtraining or under-recovery signals clearly.
+- The "summary" field should be a 2–3 sentence executive summary of the user's current fitness & recovery state.
+- Each section: emoji (single emoji fitting the topic), title (3–6 words), body (2–4 sentences referencing actual numbers), priority.
 - This is NOT medical advice. Frame it as coaching observation.`;
 
 export async function generateAiInsights(
@@ -463,33 +354,34 @@ export async function generateAiInsights(
     };
   }
 
-  const ai = getClient();
+  const client = getClient();
 
-  const response = await ai.models.generateContent({
+  const response = await client.messages.create({
     model: MODEL,
-    contents: `Here is my fitness data. Analyze it and produce insights.\n\n${dataSummary}`,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      temperature: 0.7,
-      maxOutputTokens: 2048,
+    max_tokens: 2048,
+    temperature: 0.7,
+    system: SYSTEM_PROMPT,
+    output_config: {
+      format: { type: "json_schema", schema: INSIGHTS_SCHEMA },
     },
+    messages: [
+      {
+        role: "user",
+        content: `Here is my fitness data. Analyze it and produce insights.\n\n${dataSummary}`,
+      },
+    ],
   });
 
-  const text = response.text?.trim() ?? "";
-  assertGeminiTextOk(text);
-
-  let cleaned = text;
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-  }
+  const textBlock = response.content.find((b) => b.type === "text");
+  const text = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+  assertClaudeTextOk(text);
 
   try {
-    const parsed = JSON.parse(cleaned) as AiInsightsResult;
+    const parsed = JSON.parse(text) as AiInsightsResult;
     parsed.generatedAt = new Date().toISOString();
     return parsed;
   } catch {
-    // Avoid displaying raw error blobs (sometimes HTML) as the "summary".
-    assertGeminiTextOk(text);
+    assertClaudeTextOk(text);
     throw new Error("Could not parse AI insights response. Please try again.");
   }
 }

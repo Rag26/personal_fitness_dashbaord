@@ -7,7 +7,6 @@ datasource db {
 }
 
 enum Provider {
-  FITBIT
   STRAVA
   WHOOP
 }
@@ -62,9 +61,7 @@ model User {
   biologicalSex String?
 
   connectedAccounts   ConnectedAccount[]
-  dailyFitbitStats         DailyFitbitStat[]
   dailyWhoopStats          DailyWhoopStat[]
-  fitbitActivityLogs       FitbitActivityLog[]
   stravaActivities         StravaActivity[]
   stravaActivityHrZones    StravaActivityHrZones[]
   derivedDailyMetrics      DerivedDailyMetric[]
@@ -215,7 +212,7 @@ model ConnectedAccount {
   userId    String
   provider  Provider
 
-  // Provider-specific identity (e.g. Fitbit user id, Strava athlete id)
+  // Provider-specific identity (e.g. Strava athlete id, WHOOP user id)
   providerAccountId String
 
   // OAuth tokens (stored in DB fields for now; encrypt-at-rest later if needed)
@@ -239,9 +236,7 @@ model ConnectedAccount {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  dailyFitbitStats DailyFitbitStat[]
   dailyWhoopStats  DailyWhoopStat[]
-  fitbitActivityLogs FitbitActivityLog[]
   stravaActivities StravaActivity[]
   whoopWorkouts    WhoopWorkout[]
   syncLogs         SyncLog[]
@@ -251,46 +246,6 @@ model ConnectedAccount {
   @@index([userId, provider])
   @@index([provider, updatedAt])
   @@index([userId, lastSyncedAt])
-}
-
-model DailyFitbitStat {
-  id     String @id @default(cuid())
-  userId String
-
-  // A normalized day key for efficient day-based queries and rollups
-  date DateTime
-
-  // Common daily aggregates (extend as needed)
-  steps               Int?
-  caloriesOut         Int?
-  distanceKm          Float?
-  floors              Int?
-  restingHeartRateBpm Int?
-  activeMinutes       Int?
-
-  // Sleep aggregates (optional)
-  sleepMinutes     Int?
-  sleepEfficiency  Int?
-
-  // Body (Fitbit body/weight scope)
-  weightKg Float?
-
-  // Provider payload for audit/debug/backfills
-  rawPayload Json?
-
-  sourceConnectedAccountId String?
-  connectedAccount         ConnectedAccount? @relation(fields: [sourceConnectedAccountId], references: [id], onDelete: SetNull)
-
-  derivedMetrics DerivedDailyMetric[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, date])
-  @@index([userId, date])
-  @@index([date])
 }
 
 // Daily WHOOP aggregates (recovery, strain, sleep) keyed by wake-day in the user’s timezone.
@@ -483,42 +438,8 @@ model StravaActivity {
   @@index([userId, providerActivityId])
 }
 
-// Logged exercises from Fitbit (device / MobileRun). Used to backfill runs that
-// never existed as Strava activities (e.g. historical tracker-only runs).
-model FitbitActivityLog {
-  id     String @id @default(cuid())
-  userId String
-
-  logId String
-
-  activityName     String?
-  activityTypeId   Int?
-  startAt          DateTime
-  durationMs       Int?
-  distanceMeters   Int?
-  elevationGainM   Float?
-  averageHeartRateBpm Int?
-  maxHeartRateBpm  Int?
-  calories         Int?
-  logType          String?
-
-  rawPayload Json?
-
-  sourceConnectedAccountId String?
-  connectedAccount         ConnectedAccount? @relation(fields: [sourceConnectedAccountId], references: [id], onDelete: SetNull)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, logId])
-  @@index([userId, startAt])
-  @@index([startAt])
-}
-
 // Pre-aggregated monthly rollups for fast long-term (month/year) analytics.
-// Recomputed after each successful Strava / Fitbit sync.
+// Recomputed after each successful Strava / WHOOP sync.
 model MonthlyFitnessSnapshot {
   id     String @id @default(cuid())
   userId String
@@ -531,13 +452,6 @@ model MonthlyFitnessSnapshot {
   runMovingTimeSec    Int?
   runElevGainM        Float?
   avgPaceSecPerMi     Float?
-
-  // Fitbit — daily stat averages for days with data in that month
-  avgSteps         Float?
-  avgSleepMinutes  Float?
-  avgRestingHr     Float?
-  avgWeightKg      Float?
-  fitbitDaysCount  Int?
 
   // WHOOP — daily aggregates for days with data in that month
   avgWhoopRecovery Float?
@@ -559,7 +473,7 @@ model DerivedDailyMetric {
   id     String @id @default(cuid())
   userId String
 
-  // Day key matching DailyFitbitStat (or derived from activities)
+  // Day key derived from activities or daily stats
   date DateTime
 
   // Metric key/value for long-term trend analysis (flexible & extensible)
@@ -572,9 +486,7 @@ model DerivedDailyMetric {
   computedAt       DateTime @default(now())
 
   // References to source data (optional)
-  sourceFitbitStatId    String?
   sourceStravaActivityId String?
-  sourceFitbitStat      DailyFitbitStat? @relation(fields: [sourceFitbitStatId], references: [id], onDelete: SetNull)
   sourceStravaActivity  StravaActivity? @relation(fields: [sourceStravaActivityId], references: [id], onDelete: SetNull)
 
   // Keep any intermediate values for debugging
