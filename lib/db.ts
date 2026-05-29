@@ -7,31 +7,55 @@ const globalForPrisma = globalThis as unknown as {
   prismaPool?: Pool;
 };
 
+/**
+ * Supabase's session-mode pooler (port 5432 on *.pooler.supabase.com) pins one
+ * Postgres backend per client connection for the whole session. On Vercel,
+ * frozen lambdas keep those connections open — the pool's idle timer can't fire
+ * while a function is frozen — so backends accumulate across instances until the
+ * pooler's 15-client ceiling is hit (EMAXCONNSESSION). The transaction-mode
+ * pooler (port 6543) multiplexes: a backend is borrowed only for the duration of
+ * a statement/transaction and returned afterward, so idle lambdas hold no
+ * backend. It's the configuration Supabase recommends for serverless, so upgrade
+ * a session-mode URL to it transparently. Only the runtime pool is rewritten —
+ * migrations go through prisma.config.ts and keep session mode for DDL.
+ */
+function toServerlessConnectionString(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (u.hostname.endsWith(".pooler.supabase.com") && u.port === "5432") {
+      u.port = "6543";
+      return u.toString();
+    }
+  } catch {
+    // Not a parseable URL — leave it untouched and let Pool surface the error.
+  }
+  return raw;
+}
+
 function getPool() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  const rawConnectionString = process.env.DATABASE_URL;
+  if (!rawConnectionString) {
     throw new Error(
       "DATABASE_URL is not set. Add it to your environment (e.g. .env.local).",
     );
   }
   if (
-    connectionString.startsWith("http://") ||
-    connectionString.startsWith("https://")
+    rawConnectionString.startsWith("http://") ||
+    rawConnectionString.startsWith("https://")
   ) {
     throw new Error(
       'DATABASE_URL must be a Postgres connection string (starts with "postgres://" or "postgresql://"), not a Supabase project URL.',
     );
   }
+  const connectionString = toServerlessConnectionString(rawConnectionString);
 
   if (process.env.NODE_ENV === "production") {
-    // Serverless (Vercel) spins up many lambda instances, each with its own
-    // pool, all sharing Supabase's pooler. In session mode that pooler caps
-    // total clients at 15, so an uncapped pool (pg default max = 10) lets a
-    // single heavy page — e.g. /train fires ~10 queries via Promise.all — open
-    // ~10 connections at once and exhaust the pooler (EMAXCONNSESSION). Cap each
-    // instance to one connection; queries within a request serialize over it,
-    // which is fine for our fast indexed reads. Prefer the transaction-mode
-    // pooler (port 6543) over session mode, after which this cap can be raised.
+    // Belt-and-suspenders alongside the transaction-mode upgrade above:
+    // serverless spins up many lambda instances that all share the pooler's 15
+    // backends, so cap each instance to a single connection. Queries within a
+    // request serialize over it, which is fine for our fast indexed reads. With
+    // the transaction pooler this can safely be raised to restore per-request
+    // concurrency on heavy pages like /train.
     return new Pool({
       connectionString,
       max: 1,
