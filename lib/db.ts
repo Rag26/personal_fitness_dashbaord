@@ -24,7 +24,19 @@ function getPool() {
   }
 
   if (process.env.NODE_ENV === "production") {
-    return new Pool({ connectionString });
+    // Serverless (Vercel) spins up many lambda instances, each with its own
+    // pool, all sharing Supabase's pooler. In session mode that pooler caps
+    // total clients at 15, so an uncapped pool (pg default max = 10) lets a
+    // single heavy page — e.g. /train fires ~10 queries via Promise.all — open
+    // ~10 connections at once and exhaust the pooler (EMAXCONNSESSION). Cap each
+    // instance to one connection; queries within a request serialize over it,
+    // which is fine for our fast indexed reads. Prefer the transaction-mode
+    // pooler (port 6543) over session mode, after which this cap can be raised.
+    return new Pool({
+      connectionString,
+      max: 1,
+      idleTimeoutMillis: 10_000,
+    });
   }
 
   if (!globalForPrisma.prismaPool) {
