@@ -90,6 +90,7 @@ export const HEARTRATE_ZONE_BAR_COLORS = [
   TAGS.tempo.color,
   TAGS.intervals.color,
   TAGS.threshold.color,
+  TAGS.race.color,
 ] as const;
 
 function tagOf(id: RunTagId): RunTag {

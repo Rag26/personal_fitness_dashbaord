@@ -15,16 +15,12 @@ type ZoneBlock = {
 
 /**
  * WHOOP `zone_durations` keys (v2 workout API). Values in milliseconds.
- * Each WHOOP band is a % of WHOOP's own HR-max estimate:
- *   zone_zero = <50%, zone_one = 50–60%, …, zone_five = ≥90%.
- *
- * We collapse Z0 (<50%) into Z1 so the display matches Strava's 5-zone model:
- * `lib/hr-zones.ts:aggregateHrZones` dumps any below-Z1 time into Z1 anyway,
- * so Strava's "Z1 · 50–60%" already bundles <50% time. Doing the same here
- * keeps both providers semantically aligned.
+ * Each WHOOP band is a % of WHOOP's own HR-max estimate, shown exactly as WHOOP
+ * reports it — one row per native zone, Z0 (<50%) through Z5 (≥90%).
  */
 const WHOOP_PERCENT_ZONES: Array<{ keys: string[]; min: number; max: number }> = [
-  { keys: ["zone_zero_milli", "zone_one_milli"], min: 0, max: 60 },
+  { keys: ["zone_zero_milli"], min: 0, max: 50 },
+  { keys: ["zone_one_milli"], min: 50, max: 60 },
   { keys: ["zone_two_milli"], min: 60, max: 70 },
   { keys: ["zone_three_milli"], min: 70, max: 80 },
   { keys: ["zone_four_milli"], min: 80, max: 90 },
@@ -94,7 +90,7 @@ export async function GET(
         },
       ];
       zonesHint =
-        "WHOOP zone durations, as % of WHOOP's HR-max estimate. Z1 bundles all time below 60% (matches the Strava zone model).";
+        "WHOOP zone durations, as % of WHOOP's HR-max estimate.";
     }
 
     return NextResponse.json({

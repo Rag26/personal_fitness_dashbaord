@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { requireUserId } from "@/lib/auth";
-import { getValidStravaAccessTokenForUser } from "@/lib/strava";
-import { fetchOrComputeActivityHrZones, HR_ZONE_SCHEMES } from "@/lib/hr-zones";
 
 type ZoneBucket = {
   min: number;
@@ -24,7 +22,8 @@ type ZoneBlock = {
 const WHOOP_MATCH_TOLERANCE_MS = 10 * 60 * 1000;
 
 const WHOOP_PERCENT_ZONES: Array<{ keys: string[]; min: number; max: number }> = [
-  { keys: ["zone_zero_milli", "zone_one_milli"], min: 0, max: 60 },
+  { keys: ["zone_zero_milli"], min: 0, max: 50 },
+  { keys: ["zone_one_milli"], min: 50, max: 60 },
   { keys: ["zone_two_milli"], min: 60, max: 70 },
   { keys: ["zone_three_milli"], min: 70, max: 80 },
   { keys: ["zone_four_milli"], min: 80, max: 90 },
@@ -102,7 +101,7 @@ export async function GET(
       where: {
         userId_providerActivityId: { userId, providerActivityId },
       },
-      select: { providerActivityId: true, rawPayload: true, maxHrBpm: true, startAt: true },
+      select: { providerActivityId: true, rawPayload: true, startAt: true },
     });
     if (!activity) {
       return NextResponse.json(
@@ -112,51 +111,24 @@ export async function GET(
     }
 
     const polyline = extractPolyline(activity.rawPayload);
-    const accessToken = await getValidStravaAccessTokenForUser(userId);
 
     /**
-     * We compute zones ourselves from the HR stream against the user's HR profile
-     * (max HR + scheme). Strava's /zones is Summit-only and returns 402 for many
-     * athletes, so we don't depend on it.
+     * Heart rate zones come exclusively from WHOOP. Strava only exposes a raw HR
+     * stream (its /zones endpoint is Summit-only), so rather than re-bucket that
+     * stream ourselves we surface the matching WHOOP workout's native zones.
      */
-    const result = await fetchOrComputeActivityHrZones({
-      userId,
-      providerActivityId,
-      accessToken,
-      activityMaxHrBpm: activity.maxHrBpm,
-    });
-
     let zones: ZoneBlock[] = [];
     let zonesError: string | null = null;
     let zonesHint: string | null = null;
-    if (result.ok) {
-      const edges = result.aggregate.zoneEdgesBpm;
-      const durs = result.aggregate.zoneDurationsSec;
-      const buckets: ZoneBucket[] = durs.map((sec, i) => ({
-        min: edges[i] ?? 0,
-        max: edges[i + 1] ?? edges[i] ?? 0,
-        timeSec: sec,
-      }));
-      zones = [
-        {
-          type: "heartrate",
-          sensorBased: true,
-          customZones: false,
-          presentation: "bpm",
-          label: `Strava (computed from your ${result.hrMaxBpm} bpm max)`,
-          buckets,
-        },
-      ];
-      const scheme = HR_ZONE_SCHEMES[result.schemeKey];
-      zonesHint = `Computed from your HR stream against ${result.hrMaxBpm} bpm max (${scheme?.description ?? "your scheme"})${result.cached ? " — cached" : ""}.`;
-    } else {
-      zonesError = result.message;
-    }
 
-    // Append the matching WHOOP workout's zone block (if any) so users can
-    // compare both providers' time-in-zone side-by-side.
     const whoopBlock = await findMatchingWhoopZoneBlock(userId, activity.startAt);
-    if (whoopBlock) zones.push(whoopBlock);
+    if (whoopBlock) {
+      zones = [whoopBlock];
+      zonesHint = "WHOOP zone durations, as % of WHOOP's HR-max estimate.";
+    } else {
+      zonesError =
+        "Heart rate zones come from WHOOP — no matching WHOOP workout for this run.";
+    }
 
     return NextResponse.json({
       ok: true,
