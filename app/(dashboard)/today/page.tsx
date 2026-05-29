@@ -155,8 +155,6 @@ export default async function TodayPage({
         </p>
       </div>
 
-      <AiInsightsLazy />
-
       <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard title="Distance" value={`${miles.toFixed(1)} mi`} hint="Strava · 7d" />
         <StatCard title="Time" value={secondsToHhMm(totalSeconds)} hint="Strava · 7d" />
@@ -220,6 +218,8 @@ export default async function TodayPage({
           <RecoveryDetail />
         </div>
       </details>
+
+      <AiInsightsLazy />
     </div>
   );
 }

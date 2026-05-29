@@ -3,8 +3,9 @@
 import dynamic from "next/dynamic";
 
 /**
- * Lazy-load AI Coach (client-only fetch). Cannot use `dynamic(..., { ssr: false })`
- * from a Server Component — Next requires this wrapper.
+ * Lazy-load AI Coach (client-only). Cannot use `dynamic(..., { ssr: false })`
+ * from a Server Component — Next requires this wrapper. The widget renders as a
+ * fixed corner overlay, so the loading state reserves no inline space.
  */
 export const AiInsightsLazy = dynamic(
   () =>
@@ -13,11 +14,6 @@ export const AiInsightsLazy = dynamic(
     })),
   {
     ssr: false,
-    loading: () => (
-      <div
-        className="h-36 animate-pulse rounded-2xl border border-[color:var(--color-border-subtle)] bg-[color:var(--ui-accent-soft)]/40"
-        aria-hidden
-      />
-    ),
+    loading: () => null,
   },
 );

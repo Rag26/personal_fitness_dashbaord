@@ -47,12 +47,14 @@ export function CombinedMonthCalendar({
         </div>
         <div className="flex items-center gap-1.5">
           <Link
+            scroll={false}
             href={`${basePath}${qs(prev.year, prev.month1)}`}
             className="rounded-md border border-[color:var(--color-border-default)] bg-card px-2 py-1 text-xs text-[color:var(--color-text-secondary)] transition-colors hover:bg-[color:var(--ui-accent-soft)]"
           >
             &lsaquo;
           </Link>
           <Link
+            scroll={false}
             href={`${basePath}${qs(next.year, next.month1)}`}
             className="rounded-md border border-[color:var(--color-border-default)] bg-card px-2 py-1 text-xs text-[color:var(--color-text-secondary)] transition-colors hover:bg-[color:var(--ui-accent-soft)]"
           >

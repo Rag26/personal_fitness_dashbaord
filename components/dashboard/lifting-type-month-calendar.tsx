@@ -162,12 +162,14 @@ export function LiftingTypeMonthCalendar({
         </div>
         <div className="flex items-center gap-1">
           <Link
+            scroll={false}
             href={`${basePath}${qs(prev.year, prev.month1)}`}
             className="rounded-md border border-[color:var(--color-border-default)] bg-card px-1.5 py-0.5 text-[11px] text-[color:var(--color-text-secondary)] transition-colors hover:bg-[color:var(--ui-accent-soft)]"
           >
             &lsaquo;
           </Link>
           <Link
+            scroll={false}
             href={`${basePath}${qs(next.year, next.month1)}`}
             className="rounded-md border border-[color:var(--color-border-default)] bg-card px-1.5 py-0.5 text-[11px] text-[color:var(--color-text-secondary)] transition-colors hover:bg-[color:var(--ui-accent-soft)]"
           >

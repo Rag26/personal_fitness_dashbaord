@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
+import { Sparkles, RefreshCw, X } from "lucide-react";
 import { useUserTimezone } from "@/components/providers/user-timezone-provider";
 import { formatZonedDateTimeMedium } from "@/lib/format-zoned";
 import { cn } from "@/lib/utils";
@@ -68,41 +68,18 @@ function InsightCard({ section }: { section: InsightSection }) {
   );
 }
 
+/**
+ * AI Coach surfaced as a floating corner widget. Insights are intentionally
+ * ephemeral: the result lives only in component state and is never restored from
+ * the server cache, so it clears on refresh or when navigating away (e.g. to
+ * Train) and back. Closing/reopening the panel within the same visit keeps it.
+ */
 export function AiInsights() {
   const timeZone = useUserTimezone();
+  const [open, setOpen] = React.useState(false);
   const [result, setResult] = React.useState<AiInsightsResult | null>(null);
-  const [cacheLoading, setCacheLoading] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [collapsed, setCollapsed] = React.useState(false);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setCacheLoading(true);
-      setError(null);
-      try {
-        const res = await fetch("/api/insights/coach");
-        if (!res.ok) {
-          const json = await res.json().catch(() => null);
-          throw new Error(
-            (json as { error?: string })?.error ?? `Request failed (${res.status})`,
-          );
-        }
-        const data = (await res.json()) as { result: AiInsightsResult | null };
-        if (!cancelled) setResult(data.result);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Something went wrong");
-        }
-      } finally {
-        if (!cancelled) setCacheLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const generate = React.useCallback(async () => {
     setGenerating(true);
@@ -124,10 +101,26 @@ export function AiInsights() {
     }
   }, []);
 
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="fixed right-5 bottom-5 z-40 inline-flex items-center gap-2 rounded-full border border-[color:var(--color-border-default)] bg-card px-4 py-2.5 text-sm font-medium text-[color:var(--color-text-primary)] shadow-md transition-colors hover:bg-[color:var(--ui-accent-soft)]"
+        aria-label="Open AI Coach"
+      >
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[image:linear-gradient(135deg,var(--ui-accent)_0%,var(--ui-accent-2)_100%)] shadow-sm">
+          <Sparkles className="h-3.5 w-3.5 text-white" />
+        </span>
+        AI Coach
+      </button>
+    );
+  }
+
   return (
-    <div className="overflow-hidden rounded-2xl border border-[color:var(--color-border-subtle)] bg-card/80 shadow-sm">
+    <div className="fixed right-5 bottom-5 z-40 flex max-h-[min(640px,calc(100vh-2.5rem))] w-[min(420px,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-2xl border border-[color:var(--color-border-default)] bg-card shadow-lg">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 border-b border-[color:var(--color-border-subtle)]/70 px-5 py-4">
+      <div className="flex items-center justify-between gap-3 border-b border-[color:var(--color-border-subtle)]/70 px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[image:linear-gradient(135deg,var(--ui-accent)_0%,var(--ui-accent-2)_100%)] shadow-sm">
             <Sparkles className="h-4 w-4 text-white" />
@@ -145,48 +138,26 @@ export function AiInsights() {
           <button
             type="button"
             onClick={generate}
-            disabled={generating || cacheLoading}
+            disabled={generating}
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[color:var(--color-border-default)] bg-[color:color-mix(in_srgb,var(--background)_60%,transparent)] px-3 text-xs font-medium text-[color:var(--color-text-secondary)] transition-all hover:bg-[color:var(--ui-accent-soft)] hover:text-[color:var(--color-text-primary)] disabled:opacity-50"
           >
-            <RefreshCw
-              className={cn("h-3 w-3", generating && "animate-spin")}
-            />
-            {generating
-              ? "Analyzing…"
-              : result
-                ? "Regenerate"
-                : "Generate insights"}
+            <RefreshCw className={cn("h-3 w-3", generating && "animate-spin")} />
+            {generating ? "Analyzing…" : result ? "Regenerate" : "Generate"}
           </button>
-          {result && (
-            <button
-              type="button"
-              onClick={() => setCollapsed((c) => !c)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--color-text-tertiary)] transition-colors hover:bg-[color:var(--ui-accent-soft)] hover:text-[color:var(--color-text-secondary)]"
-              aria-label={collapsed ? "Expand insights" : "Collapse insights"}
-            >
-              {collapsed ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronUp className="h-4 w-4" />
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--color-text-tertiary)] transition-colors hover:bg-[color:var(--ui-accent-soft)] hover:text-[color:var(--color-text-secondary)]"
+            aria-label="Close AI Coach"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       </div>
 
       {/* Body */}
-      <div className="px-5 py-4">
-        {cacheLoading && (
-          <div className="flex flex-col gap-3 py-8">
-            <div className="h-20 animate-pulse rounded-xl bg-[color:var(--ui-accent-soft)]/50" />
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="h-28 animate-pulse rounded-xl bg-[color:var(--color-bg-elevated)]" />
-              <div className="h-28 animate-pulse rounded-xl bg-[color:var(--color-bg-elevated)]" />
-            </div>
-          </div>
-        )}
-
-        {generating && !result && !cacheLoading && (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {generating && !result && (
           <div className="flex flex-col items-center gap-3 py-10">
             <div className="relative h-10 w-10">
               <div className="absolute inset-0 animate-ping rounded-full bg-[color:var(--ui-accent-soft)]" />
@@ -205,13 +176,13 @@ export function AiInsights() {
           </div>
         )}
 
-        {error && !cacheLoading && (
+        {error && (
           <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--ui-danger)_35%,transparent)] bg-[color:var(--ui-danger-soft)] p-4 text-sm text-[color:color-mix(in_srgb,var(--ui-danger)_72%,var(--color-text-primary))]">
             {error}
           </div>
         )}
 
-        {!cacheLoading && !result && !generating && !error && (
+        {!result && !generating && !error && (
           <div className="py-8 text-center">
             <p className="text-sm text-[color:var(--color-text-secondary)]">
               Get AI-powered observations from your last 30 days when you’re
@@ -220,11 +191,10 @@ export function AiInsights() {
           </div>
         )}
 
-        {result && !cacheLoading && (
+        {result && (
           <div
             className={cn(
               "space-y-4 transition-opacity",
-              collapsed && "hidden",
               generating && "pointer-events-none opacity-60",
             )}
           >
@@ -236,7 +206,7 @@ export function AiInsights() {
             </div>
 
             {/* Sections sorted by priority */}
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-3">
               {[...result.sections]
                 .sort((a, b) => {
                   const order = { high: 0, medium: 1, low: 2 };
