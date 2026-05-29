@@ -30,7 +30,7 @@ export default function PrivacyPage() {
           <CardContent className="space-y-3 text-sm leading-relaxed text-stone-700">
             <p>
               LockIn. is a personal fitness dashboard. It connects to your
-              WHOOP, Strava, and Apple Health data on your behalf, stores it in
+              WHOOP and Strava data on your behalf, stores it in
               a database that you control, and shows it back to you on a
               private dashboard.
             </p>
@@ -67,10 +67,11 @@ export default function PrivacyPage() {
               into our database.
             </p>
             <p>
-              <span className="font-medium text-stone-900">Apple Health.</span>{" "}
-              If you upload an Apple Health export, we parse it server-side
-              and store daily nutrition and active-energy totals derived from
-              it. We do not retain the original XML after parsing.
+              <span className="font-medium text-stone-900">Food logging.</span>{" "}
+              Foods you log are stored as a personal food library plus per-day
+              entries. Nutrition-label photos you add are sent to our AI
+              provider to read the macros; we store the parsed values, not the
+              photo.
             </p>
             <p>
               <span className="font-medium text-stone-900">Manual entries.</span>{" "}

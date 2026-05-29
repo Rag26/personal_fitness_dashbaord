@@ -1,12 +1,10 @@
 import "server-only";
-import Link from "next/link";
 
 import { ChartCard } from "@/components/dashboard/chart-card";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { MultiLineChartView } from "@/components/charts/multi-line-chart";
 import { BarChartView } from "@/components/charts/bar-chart";
 import { AreaChartView } from "@/components/charts/area-chart";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { prisma } from "@/lib/db";
 import { fetchStravaRunsInRange } from "@/lib/merged-runs";
 import { utcCalendarWindowBoundsMs } from "@/lib/calendar-range";
@@ -51,18 +49,11 @@ function isoDay(d: Date) {
 export async function InsightsBelowFold({
   userId,
   tz,
-  whoopConnected,
-  todayIso,
 }: {
   userId: string;
   tz: string;
-  whoopConnected: boolean;
-  todayIso: string;
 }) {
   const shortDate = (d: Date) => formatZonedDateShort(d, tz);
-  /** Same canonical calendar day as the weight chart — avoids rare DST/raw-ms mismatches. */
-  const weightDayLong = (d: Date) =>
-    formatZonedWeekdayMonthDayYear(canonicalZonedDayStart(d, tz), tz);
   const now = new Date();
   const { startMs, endMs, daysInWindow } = utcCalendarWindowBoundsMs(30, now);
   const rangeStart = new Date(startMs);
@@ -103,6 +94,7 @@ export async function InsightsBelowFold({
         sleepPerformancePct: true,
         sleepEfficiencyPct: true,
         weightKg: true,
+        energyKcal: true,
       },
       orderBy: { date: "asc" },
     }),
@@ -114,16 +106,12 @@ export async function InsightsBelowFold({
     }),
   ]);
 
-  // Nutrition + profile inputs for deficit-aware weight projection.
-  const [nutritionRows, burnProfile] = await Promise.all([
-    prisma().dailyNutritionLog.findMany({
+  // Nutrition + profile inputs for deficit-aware weight projection. Intake is
+  // the per-food log; burn is WHOOP full-day energy (fallback BMR).
+  const [foodLog, burnProfile] = await Promise.all([
+    prisma().foodLogEntry.findMany({
       where: { userId, date: { gte: projectionStart } },
-      select: {
-        date: true,
-        source: true,
-        caloriesKcal: true,
-        activeEnergyKcal: true,
-      },
+      select: { date: true, caloriesKcal: true },
       orderBy: { date: "asc" },
     }),
     prisma().user.findUnique({
@@ -141,7 +129,6 @@ export async function InsightsBelowFold({
     (r) => r.weightKg != null && r.weightKg > 0,
   );
   /** Manual log views derived from the single descending pull. */
-  const recentManualLogs = manualLogs.slice(0, 10);
   const manualWeightWindow = manualLogs
     .filter((r) => r.date.getTime() >= projectionStart.getTime())
     .slice()
@@ -234,44 +221,42 @@ export async function InsightsBelowFold({
   const dob = burnProfile?.dateOfBirth ?? null;
   const burnReady = heightCm != null && dob != null && sex != null && weightByDayMs.size > 0;
 
-  // Merge MANUAL-over-BACKFILL for consumed calories per day, and read activeEnergy separately.
+  // Sum FoodLogEntry per day for consumed calories.
   const consumedByDay = new Map<number, number>();
-  const activeByDay = new Map<number, number>();
-  const bestSourceByDay = new Map<number, "BACKFILL" | "MANUAL">();
-  for (const r of nutritionRows) {
-    const dayMs = toDayStartMs(r.date);
-    if (r.activeEnergyKcal != null && r.activeEnergyKcal > 0) {
-      activeByDay.set(dayMs, r.activeEnergyKcal);
-    }
-    if (r.caloriesKcal == null || !Number.isFinite(r.caloriesKcal)) continue;
-    const existingSrc = bestSourceByDay.get(dayMs);
-    if (!existingSrc) {
-      bestSourceByDay.set(dayMs, r.source);
-      consumedByDay.set(dayMs, r.caloriesKcal);
-    } else if (r.source === "MANUAL" && existingSrc !== "MANUAL") {
-      bestSourceByDay.set(dayMs, r.source);
-      consumedByDay.set(dayMs, r.caloriesKcal);
+  for (const fe of foodLog) {
+    if (fe.caloriesKcal == null || !Number.isFinite(fe.caloriesKcal)) continue;
+    const dayMs = toDayStartMs(fe.date);
+    consumedByDay.set(dayMs, (consumedByDay.get(dayMs) ?? 0) + fe.caloriesKcal);
+  }
+
+  // WHOOP full-day energy burn (TDEE) per day; falls back to BMR when absent.
+  const energyByDay = new Map<number, number>();
+  for (const r of whoop60) {
+    if (r.energyKcal != null && r.energyKcal > 0) {
+      energyByDay.set(toDayStartMs(r.date), r.energyKcal);
     }
   }
 
   const deficitByDayMs = new Map<number, number>();
-  if (burnReady) {
+  if (burnReady || energyByDay.size > 0) {
     for (const [dayMs, consumed] of consumedByDay) {
       if (!(consumed > MIN_TRUSTED_CONSUMED_KCAL)) continue;
-      const weight = weightByDayMs.get(dayMs) ?? null;
-      const ageY = dob ? ageYearsAt(dob, new Date(dayMs)) : null;
-      const bmr =
-        weight != null && ageY != null
-          ? mifflinStJeorBmrKcal({
-              weightKg: weight,
-              heightCm: heightCm!,
-              ageYears: ageY,
-              sex: sex!,
-            })
-          : null;
-      const active = activeByDay.get(dayMs) ?? 0;
-      if (bmr == null) continue;
-      const totalBurn = bmr + active;
+      const whoopBurn = energyByDay.get(dayMs) ?? null;
+      let totalBurn: number | null = whoopBurn;
+      if (totalBurn == null) {
+        const weight = weightByDayMs.get(dayMs) ?? null;
+        const ageY = dob ? ageYearsAt(dob, new Date(dayMs)) : null;
+        totalBurn =
+          weight != null && ageY != null
+            ? mifflinStJeorBmrKcal({
+                weightKg: weight,
+                heightCm: heightCm!,
+                ageYears: ageY,
+                sex: sex!,
+              })
+            : null;
+      }
+      if (totalBurn == null) continue;
       deficitByDayMs.set(dayMs, consumed - totalBurn);
     }
   }
@@ -399,7 +384,7 @@ export async function InsightsBelowFold({
   );
 
   return (
-    <>
+    <div className="space-y-8">
       <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard title="Runs" value={String(runsThisMonth)} hint={`Strava · ${daysInWindow}d window`} />
         <StatCard title="Total distance" value={`${totalMi30.toFixed(1)} mi`} hint={`Strava · ${daysInWindow}d window`} />
@@ -551,152 +536,11 @@ export async function InsightsBelowFold({
         </ChartCard>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Log a weight</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm leading-relaxed text-stone-600">
-              {whoopConnected
-                ? "WHOOP body measurements are pulled automatically when you sync. Add a manual entry here for any day WHOOP missed — manual readings take precedence on shared days."
-                : "WHOOP is not connected, so manual entries are the only source of weight data. Log a measurement whenever you weigh in."}
-            </p>
-            <form
-              action="/api/insights/weight"
-              method="post"
-              className="grid gap-3 sm:grid-cols-2"
-            >
-              <label className="block sm:col-span-2">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Date
-                </div>
-                <input
-                  name="date"
-                  type="date"
-                  required
-                  defaultValue={todayIso}
-                  max={todayIso}
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                />
-              </label>
-              <label className="block">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Weight
-                </div>
-                <input
-                  name="weight"
-                  type="number"
-                  step="0.1"
-                  min="40"
-                  max="900"
-                  placeholder="e.g. 178.4"
-                  required
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                />
-              </label>
-              <label className="block">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Unit
-                </div>
-                <select
-                  name="unit"
-                  defaultValue="lb"
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                >
-                  <option value="lb">Pounds (lb)</option>
-                  <option value="kg">Kilograms (kg)</option>
-                </select>
-              </label>
-              <label className="block sm:col-span-2">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Notes (optional)
-                </div>
-                <input
-                  name="notes"
-                  type="text"
-                  maxLength={280}
-                  placeholder="e.g. morning, post-run, post-meal"
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                />
-              </label>
-              <div className="sm:col-span-2 flex items-center gap-3">
-                <button className="inline-flex h-10 items-center justify-center rounded-xl bg-stone-900 px-4 text-sm font-medium text-white transition-colors hover:bg-stone-800">
-                  Save entry
-                </button>
-                {whoopConnected ? (
-                  <span className="text-xs text-stone-500">
-                    Tip: log on days you weighed in but didn’t wear WHOOP.
-                  </span>
-                ) : (
-                  <Link
-                    href="/settings"
-                    className="text-xs font-medium text-orange-700 underline-offset-2 hover:underline"
-                  >
-                    Connect WHOOP for automatic syncing →
-                  </Link>
-                )}
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent manual entries</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {recentManualLogs.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[color:var(--color-border-subtle)] p-6 text-sm text-stone-500">
-                No manual entries yet. Log one on the left and it will appear here.
-              </div>
-            ) : (
-              <ul className="divide-y divide-[color:var(--color-border-subtle)]">
-                {recentManualLogs.map((row) => (
-                  <li
-                    key={row.id}
-                    className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-stone-900">
-                        {kgToLb(row.weightKg).toFixed(1)} lb
-                        <span className="ml-2 text-xs font-normal text-stone-500">
-                          {weightDayLong(row.date)}
-                        </span>
-                      </div>
-                      {row.notes ? (
-                        <div className="mt-0.5 truncate text-xs text-stone-500">
-                          {row.notes}
-                        </div>
-                      ) : null}
-                    </div>
-                    <form action="/api/insights/weight" method="post">
-                      <input type="hidden" name="_action" value="delete" />
-                      <input type="hidden" name="id" value={row.id} />
-                      <button
-                        type="submit"
-                        className="text-xs font-medium text-stone-500 hover:text-[color:var(--ui-danger)]"
-                      >
-                        Delete
-                      </button>
-                    </form>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p className="mt-3 text-xs text-stone-500">
-              Showing latest 10 of {sourceTotals.manual + recentManualLogs.length === sourceTotals.manual ? sourceTotals.manual : "your"} entries.
-              Manual entries take precedence over WHOOP for the same day.
-            </p>
-          </CardContent>
-        </Card>
-      </section>
-
       <section>
         <ChartCard title="Weekly run volume" description="Strava · miles per week (runs in window)">
           <BarChartView data={weeklyData} xKey="week" yKey="mi" color={chartPalette.amazon} yUnit=" mi" />
         </ChartCard>
       </section>
-    </>
+    </div>
   );
 }

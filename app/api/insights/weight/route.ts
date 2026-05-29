@@ -30,8 +30,9 @@ export async function POST(req: Request) {
   const form = await req.formData();
   const action = String(form.get("_action") ?? "upsert");
 
+  // Weight logging now lives on the Nutrition page; redirect back there.
   const redirectBack = (qs: string) =>
-    NextResponse.redirect(new URL(`/insights?${qs}`, req.url), { status: 303 });
+    NextResponse.redirect(new URL(`/nutrition?${qs}`, req.url), { status: 303 });
 
   if (action === "delete") {
     const parsed = DeleteSchema.safeParse({ id: form.get("id") });

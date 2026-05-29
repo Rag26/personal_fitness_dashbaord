@@ -2,15 +2,19 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /**
-   * Global middleware clones request bodies up to this cap so both middleware
-   * and route handlers can read them. Apple Health `export.xml` is often
-   * 200MB+ — the default 10MB truncates uploads before `/api/nutrition/upload`
-   * sees the full stream.
-   *
-   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/middlewareClientMaxBodySize
+   * The dashboard was consolidated from 8 pages to 4 (Today / Train / Nutrition
+   * / Progress). Redirect the retired routes so old bookmarks and inbound links
+   * keep working.
    */
-  experimental: {
-    middlewareClientMaxBodySize: "512mb",
+  async redirects() {
+    return [
+      { source: "/overview", destination: "/today", permanent: true },
+      { source: "/recovery", destination: "/today", permanent: true },
+      { source: "/running", destination: "/train", permanent: true },
+      { source: "/lifting", destination: "/train", permanent: true },
+      { source: "/insights", destination: "/progress", permanent: true },
+      { source: "/journey", destination: "/progress", permanent: true },
+    ];
   },
 };
 

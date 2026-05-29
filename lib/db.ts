@@ -38,7 +38,7 @@ function getPool() {
  * client. Bump this to the *latest* added model whenever the schema gains a
  * new one so dev HMR picks up the regenerated client without a manual restart.
  */
-const PRISMA_SCHEMA_MARKER = "manualWeightLog" as const;
+const PRISMA_SCHEMA_MARKER = "foodLibraryItem" as const;
 
 function discardStalePrismaClient(client: PrismaClient) {
   void client.$disconnect().catch(() => {});

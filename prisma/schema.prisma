@@ -9,6 +9,7 @@ datasource db {
 enum Provider {
   STRAVA
   WHOOP
+  HEVY
 }
 
 enum SyncStatus {
@@ -74,6 +75,18 @@ model User {
   liftSplitWeeklyTarget    LiftSplitWeeklyTarget?
   manualWeightLogs         ManualWeightLog[]
   dailyNutritionLogs       DailyNutritionLog[]
+  foodLogEntries           FoodLogEntry[]
+  foodLibraryItems         FoodLibraryItem[]
+  weightGoals              WeightGoal[]
+  hevyWorkouts             HevyWorkout[]
+  muscleGroupWeeklyTargets MuscleGroupWeeklyTarget[]
+
+  /// Last successful Hevy deep sync. Drives "last synced" copy on Settings and
+  /// chooses between a full backfill and an incremental events sync.
+  hevyLastSyncedAt DateTime?
+
+  /// Last `since` cursor passed to /v1/workouts/events for incremental sync.
+  hevyWorkoutEventsCursor DateTime?
 
   /// Last successful AI Coach (Gemini) JSON payload: { summary, sections, generatedAt }.
   aiCoachInsightsJson       Json?
@@ -270,6 +283,11 @@ model DailyWhoopStat {
   // From GET /v2/user/measurement/body (weight_kilogram), stamped on rows when synced
   weightKg Float?
 
+  // Full-day energy expenditure (TDEE incl. resting) from WHOOP cycle
+  // score.kilojoule, converted kJ → kcal (÷ 4.184). Drives nutrition
+  // maintenance math; backfilled by a WHOOP deep re-sync.
+  energyKcal Float?
+
   rawPayload Json?
 
   sourceConnectedAccountId String?
@@ -365,6 +383,91 @@ model LiftSplitWeeklyTarget {
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Per-muscle-group weekly session targets (e.g. abs 3x, shoulders 3x). These
+/// run alongside LiftSplitWeeklyTarget — split targets are session-level
+/// (PUSH/PULL/LEGS), these are exercise-level (a single PUSH session can count
+/// toward both "shoulders" and "triceps" if the exercises hit those groups).
+model MuscleGroupWeeklyTarget {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Lowercase Hevy MuscleGroup name (e.g. "abs", "shoulders", "forearms",
+  /// "chest"). Stored as a free-form string so we don't need a schema
+  /// migration when Hevy adds new groups.
+  muscleGroup String
+  target      Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, muscleGroup])
+  @@index([userId])
+}
+
+/// Workouts pulled from Hevy. Authenticated via HEVY_API_KEY env var (no
+/// ConnectedAccount row — single-user personal app). Exercise + set details
+/// give us the muscle-group breakdown we need for classification and goals.
+model HevyWorkout {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Hevy workout id (UUID string).
+  providerWorkoutId String
+
+  title       String
+  description String?
+
+  startAt DateTime
+  endAt   DateTime
+
+  /// Auto-derived (from dominant exercise muscle groups) on sync; user can
+  /// override via the LiftTypeSelect dropdown. liftSessionTemplateAuto flips
+  /// to false on override so subsequent syncs don't clobber.
+  liftSessionTemplate     LiftSessionTemplate?
+  liftSessionTemplateAuto Boolean              @default(true)
+
+  /// Array of { index, exerciseTemplateId, title, primaryMuscleGroup,
+  /// secondaryMuscleGroups, sets: [{ index, type, reps, weightKg,
+  /// distanceMeters, durationSeconds, rpe }] }.
+  exercises Json @default("[]")
+
+  /// Flat dedup of every primary+secondary muscle group hit in this workout.
+  /// Stored alongside exercises so weekly tally queries don't have to parse
+  /// the JSON.
+  muscleGroups String[]
+
+  rawPayload Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerWorkoutId])
+  @@index([userId, startAt])
+  @@index([userId, liftSessionTemplate])
+  @@index([startAt])
+}
+
+/// Cached lookup of Hevy exercise templates. Populated lazily so each workout
+/// sync can resolve exercises to muscle groups without re-fetching the catalog.
+model HevyExerciseTemplate {
+  /// Hevy exercise_template id (UUID string).
+  id String @id
+
+  title                 String
+  type                  String
+  primaryMuscleGroup    String
+  secondaryMuscleGroups String[]
+  equipment             String?
+  isCustom              Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// AI-generated Mon–Sun training plan for a user (week anchored to Monday in their timezone).
@@ -536,3 +639,180 @@ model SyncLog {
   @@index([status, startedAt])
 }
 
+/**
+ * User's active weight-loss (or weight-management) goal. One row per goal
+ * lifecycle: when the user changes target/deadline, the prior row is soft-
+ * deleted (isActive=false) and a new one is inserted. AI insights, daily
+ * intake target, macro derivation, and the closed-loop weekly recalibration
+ * all read the (single) currently-active goal.
+ */
+model WeightGoal {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Pounds (display unit). Math converts to kg internally as needed.
+  targetWeightLb Float
+  /// User's calendar day at UTC midnight (same convention as ManualWeightLog).
+  deadlineDate   DateTime
+
+  /// Snapshot of starting weight at goal creation, for progress display.
+  startWeightLb Float
+  startedAt     DateTime @default(now())
+
+  /// Soft-delete flag. Only one row per user has isActive=true at any time.
+  isActive Boolean @default(true)
+
+  /// ISO week string (e.g. "2026-W21") of the most recent recalibration.
+  /// Guards weekly recalibration against running multiple times when the
+  /// user opens /nutrition more than once on the same Sunday.
+  lastRecalibratedIsoWeek String?
+
+  /// History of intake targets across weeks. JSON array of:
+  ///   { weekStartIso: "YYYY-MM-DD",
+  ///     intakeKcal: number,
+  ///     reason: "initial" | "recalibrated" | "manual",
+  ///     deltaFromPrev: number }
+  /// The last element is the currently-active intake target.
+  intakeHistory Json
+
+  /// Optional per-macro overrides set by the user. JSON object:
+  ///   { proteinG?: number, fatG?: number, carbsG?: number }
+  /// Null fields fall back to derived defaults. Overrides win absolutely
+  /// over both the standard derivation and the WHOOP-strain periodization.
+  macroOverrides Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([userId, startedAt])
+}
+
+/**
+ * Individual food log entry. One row per food the user logged on a day —
+ * NOT a per-day aggregate (DailyNutritionLog handles the Apple Health
+ * BACKFILL aggregate). The "daily total" widget on /nutrition sums these
+ * rows for the active day; recent-foods + eat-now-panel read frequency
+ * from this table.
+ */
+model FoodLogEntry {
+  id     String @id @default(cuid())
+  userId String
+
+  /// User-timezone midnight stored as a UTC instant (same convention as
+  /// DailyNutritionLog and ManualWeightLog). The "today" the user logged for.
+  date     DateTime
+  /// Actual entry time (for ordering and quick-undo behavior).
+  loggedAt DateTime @default(now())
+
+  /// Optional meal context. Free-form text; common values:
+  /// "breakfast" | "lunch" | "dinner" | "snack".
+  mealTime String?
+
+  /// What the user said they ate (e.g., "300g greek yogurt", "banana").
+  /// Used verbatim for the recent-foods row.
+  foodName     String
+  /// Serving label echoed back from Nutritionix (e.g., "300 g", "1 medium banana").
+  servingLabel String?
+
+  caloriesKcal Float
+  proteinG     Float
+  carbsG       Float
+  fatG         Float
+
+  /// Link back to the cached Nutritionix lookup that populated this entry,
+  /// so we can recompute frequency-weighted "recent foods" and surface the
+  /// canonical food name across logs of the same query.
+  cachedFoodLookupId String?
+  cachedFoodLookup   CachedFoodLookup? @relation(fields: [cachedFoodLookupId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+  @@index([userId, loggedAt])
+  @@index([userId, foodName, loggedAt])
+}
+
+/**
+ * Cache of Nutritionix /v2/natural/nutrients lookups. Keyed on a normalized
+ * query string (lowercased, whitespace-collapsed) so "Greek Yogurt 300g"
+ * and "greek yogurt 300g" share an entry. We never expire entries — food
+ * nutrition data is static — but we track lastUsedAt for future cleanup.
+ *
+ * This table also serves as the "personal food library" that builds up over
+ * time: every food the user looks up becomes a one-tap re-log via the
+ * recent-foods row (Phase 2).
+ */
+model CachedFoodLookup {
+  id String @id @default(cuid())
+
+  /// Lowercased + whitespace-collapsed query. Cache key.
+  queryNormalized String @unique
+
+  /// Raw Nutritionix response payload, parsed for our use.
+  responseJson Json
+
+  caloriesKcal Float
+  proteinG     Float
+  fatG         Float
+  carbsG       Float
+  /// Echoed back from Nutritionix (e.g., "300 g", "1 medium banana").
+  servingLabel String
+
+  hitCount   Int      @default(1)
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  foodLogEntries FoodLogEntry[]
+
+  @@index([queryNormalized])
+  @@index([lastUsedAt])
+}
+
+/**
+ * User's personal food library. Each item is captured ONCE — typically by
+ * photographing a nutrition label (parsed by Claude vision in
+ * lib/claude-food-label.ts) — then re-logged any number of times by selecting
+ * it and entering a gram amount.
+ *
+ * Macros are stored PER SERVING exactly as printed on the label, alongside the
+ * serving's gram weight (`servingGrams`). Logging X grams scales linearly:
+ *   factor = X / servingGrams ; macros = perServing × factor.
+ * When the label has no gram weight (`servingGrams` null), the item is logged
+ * by whole-serving count instead.
+ *
+ * Replaces the dead Nutritionix lookup as the primary food-data source — no
+ * third-party food API, just the existing ANTHROPIC_API_KEY.
+ */
+model FoodLibraryItem {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Display + lookup name, e.g. "Trader Joe's Chicken". Unique per user.
+  name String
+
+  /// Raw serving descriptor from the label, e.g. "1 container (170 g)".
+  servingLabel String?
+  /// Grams in one serving (from the label). Null when the label gives no gram
+  /// weight — then the item can only be logged by whole-serving count.
+  servingGrams Float?
+
+  /// Macros for ONE serving, exactly as printed on the label.
+  caloriesKcal Float
+  proteinG     Float
+  carbsG       Float
+  fatG         Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, createdAt])
+}

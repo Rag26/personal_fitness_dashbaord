@@ -18,13 +18,10 @@ import { cn } from "@/lib/utils";
 import { useTheme, type ThemeId } from "@/lib/theme-context";
 
 const navItems = [
-  { href: "/overview", label: "Overview" },
-  { href: "/running", label: "Running" },
-  { href: "/lifting", label: "Lifting" },
-  { href: "/training", label: "Training" },
-  { href: "/recovery", label: "Recovery" },
-  { href: "/insights", label: "Insights" },
-  { href: "/journey", label: "Journey" },
+  { href: "/today", label: "Today" },
+  { href: "/train", label: "Train" },
+  { href: "/nutrition", label: "Nutrition" },
+  { href: "/progress", label: "Progress" },
   { href: "/settings", label: "Settings" },
 ] as const;
 

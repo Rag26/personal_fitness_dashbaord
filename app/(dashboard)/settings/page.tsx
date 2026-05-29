@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requireUserId } from "@/lib/auth";
 import Link from "next/link";
 import { getRecentStravaActivities } from "@/lib/strava";
+import { isHevyConfigured } from "@/lib/hevy";
 import { kgToLb, metersToMiles, minutesToHhMm } from "@/lib/units";
 import { getTimezones } from "@/lib/timezones";
 import { formatZonedDateShort, formatZonedDateTimeMedium } from "@/lib/format-zoned";
@@ -16,6 +17,8 @@ type SettingsSearch = {
   reason?: string;
   stravaSync?: string;
   whoopSync?: string;
+  hevySync?: string;
+  hevyTemplates?: string;
   fetched?: string;
   upserted?: string;
   workoutsUpserted?: string;
@@ -41,6 +44,7 @@ export default async function SettingsPage({
       hrMaxBpm: true,
       hrRestBpm: true,
       hrZoneScheme: true,
+      dateOfBirth: true,
     },
   });
   const tz = normalizeUserTimezone(user?.timezone);
@@ -91,6 +95,32 @@ export default async function SettingsPage({
         })
       : [];
 
+  const hevyConfigured = isHevyConfigured();
+  const [hevyState, recentHevyWorkouts, hevyTemplateCount] = await Promise.all([
+    prisma().user.findUnique({
+      where: { id: userId },
+      select: { hevyLastSyncedAt: true },
+    }),
+    hevyConfigured
+      ? prisma().hevyWorkout.findMany({
+          where: { userId },
+          orderBy: { startAt: "desc" },
+          take: 5,
+          select: {
+            id: true,
+            title: true,
+            startAt: true,
+            liftSessionTemplate: true,
+            muscleGroups: true,
+            exercises: true,
+          },
+        })
+      : Promise.resolve([]),
+    hevyConfigured
+      ? prisma().hevyExerciseTemplate.count()
+      : Promise.resolve(0),
+  ]);
+
   return (
     <div className="space-y-8">
       <div>
@@ -107,6 +137,8 @@ export default async function SettingsPage({
         sp.whoop === "error" ||
         sp.stravaSync ||
         sp.whoopSync ||
+        sp.hevySync ||
+        sp.hevyTemplates ||
         sp.profile ||
         sp.password) && (
         <div className="space-y-2 rounded-xl border border-[color:var(--color-border-default)] bg-card/80 p-4 text-sm text-[color:var(--color-text-secondary)]">
@@ -155,6 +187,28 @@ export default async function SettingsPage({
           ) : null}
           {sp.whoopSync === "not_connected" ? (
             <p className="text-[color:var(--ui-danger)]">Connect WHOOP before syncing.</p>
+          ) : null}
+          {sp.hevySync === "ok" ? (
+            <p>
+              Hevy sync finished (fetched {sp.fetched ?? "—"}, saved{" "}
+              {sp.upserted ?? "—"}).
+            </p>
+          ) : null}
+          {sp.hevySync === "error" ? (
+            <p className="text-[color:var(--ui-danger)]">Hevy sync failed.</p>
+          ) : null}
+          {sp.hevySync === "not_connected" ? (
+            <p className="text-[color:var(--ui-danger)]">
+              Set HEVY_API_KEY in .env.local before syncing.
+            </p>
+          ) : null}
+          {sp.hevyTemplates === "ok" ? (
+            <p>Hevy exercise templates refreshed ({sp.fetched ?? "—"} cached).</p>
+          ) : null}
+          {sp.hevyTemplates === "error" ? (
+            <p className="text-[color:var(--ui-danger)]">
+              Could not refresh Hevy exercise templates.
+            </p>
           ) : null}
           {sp.profile === "ok" ? (
             <p>Profile updated successfully.</p>
@@ -335,16 +389,113 @@ export default async function SettingsPage({
           </div>
 
           <div className="border-t border-amber-900/10 pt-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-medium text-stone-900">Hevy</div>
+                <div className="mt-1 text-sm text-stone-500">
+                  {hevyConfigured
+                    ? "API key configured (.env.local · HEVY_API_KEY)"
+                    : "Not configured — set HEVY_API_KEY in .env.local"}
+                </div>
+                {hevyConfigured ? (
+                  <div className="mt-1 text-xs text-stone-500">
+                    Last synced:{" "}
+                    {hevyState?.hevyLastSyncedAt
+                      ? formatZonedDateTimeMedium(hevyState.hevyLastSyncedAt, tz)
+                      : "never"}{" "}
+                    · {hevyTemplateCount} exercise templates cached
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs text-stone-500">
+                    Grab a key from{" "}
+                    <a
+                      href="https://hevy.com/settings?developer"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline-offset-2 hover:underline"
+                    >
+                      hevy.com/settings?developer
+                    </a>
+                    , add it as <code className="rounded bg-stone-100 px-1 py-0.5 text-[11px]">HEVY_API_KEY</code> in
+                    .env.local, then restart the dev server.
+                  </div>
+                )}
+              </div>
+              {hevyConfigured ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <form action="/api/hevy/sync-events" method="post">
+                    <button className="inline-flex h-9 items-center justify-center rounded-xl bg-stone-900 px-4 text-sm font-medium text-white transition-colors hover:bg-stone-800">
+                      Sync now
+                    </button>
+                  </form>
+                  <form action="/api/hevy/sync?days=90" method="post">
+                    <button className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/15 bg-card/75 px-4 text-sm font-medium text-stone-700 transition-all hover:border-orange-500/40 hover:bg-orange-50/75 hover:text-orange-700">
+                      Backfill 90d
+                    </button>
+                  </form>
+                  <form action="/api/hevy/sync?templates=true" method="post">
+                    <button className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/15 bg-card/75 px-4 text-sm font-medium text-stone-700 transition-all hover:border-orange-500/40 hover:bg-orange-50/75 hover:text-orange-700">
+                      Refresh exercises
+                    </button>
+                  </form>
+                </div>
+              ) : null}
+            </div>
+            {hevyConfigured ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-xl border border-amber-900/10 bg-card/55 p-4">
+                  <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
+                    Recent Hevy workouts (latest 5)
+                  </div>
+                  {recentHevyWorkouts.length > 0 ? (
+                    <ul className="mt-3 space-y-1.5 text-sm">
+                      {recentHevyWorkouts.map((row) => {
+                        const exCount = Array.isArray(row.exercises)
+                          ? row.exercises.length
+                          : 0;
+                        return (
+                          <li
+                            key={row.id}
+                            className="flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <span className="truncate text-stone-700">
+                              <span className="font-medium">{row.title}</span>
+                              {row.liftSessionTemplate ? (
+                                <span className="ml-2 rounded bg-[color:var(--ui-accent-soft)] px-1.5 py-0.5 text-[10px] tracking-wide text-[color:var(--ui-accent)]">
+                                  {row.liftSessionTemplate}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="shrink-0 text-xs text-stone-500">
+                              {formatZonedDateShort(row.startAt, tz)} · {exCount}{" "}
+                              {exCount === 1 ? "exercise" : "exercises"}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div className="mt-3 text-sm text-stone-500">
+                      No Hevy workouts yet — click &ldquo;Backfill 90d&rdquo; to
+                      pull recent sessions.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="border-t border-amber-900/10 pt-6">
             <div className="text-sm font-medium text-stone-900">Long-term backfill</div>
             <p className="mt-1 text-xs text-stone-600 leading-relaxed">
               Everything you sync is kept in the database. Strava can backfill years.
               WHOOP recovery sync is limited to about six months per request.
               Monthly rollups on the{" "}
               <Link
-                href="/journey"
+                href="/progress"
                 className="font-medium text-orange-800 underline-offset-2 hover:underline"
               >
-                Journey
+                Progress
               </Link>{" "}
               page refresh automatically after each successful sync.
             </p>
@@ -369,6 +520,16 @@ export default async function SettingsPage({
                   </button>
                 </form>
               ) : null}
+              {hevyConfigured ? (
+                <form action="/api/hevy/sync?days=365" method="post">
+                  <button
+                    type="submit"
+                    className="inline-flex h-9 items-center justify-center rounded-xl border border-amber-900/20 bg-amber-50/80 px-3 text-xs font-medium text-stone-800 transition-all hover:border-orange-500/40 hover:bg-amber-50"
+                  >
+                    Hevy · ~1 year
+                  </button>
+                </form>
+              ) : null}
             </div>
           </div>
         </CardContent>
@@ -381,15 +542,32 @@ export default async function SettingsPage({
         <CardContent>
           <p className="text-sm text-stone-600">
             We compute time-in-zone for each Strava run from the activity HR stream
-            against your max HR. Set your max HR (e.g. 220 - age, or your highest
-            observed value). If you leave Resting HR blank, we’ll automatically use
-            your latest WHOOP resting HR (when connected).
+            against your max HR. Enter your birthday and we’ll estimate Max HR as{" "}
+            <code className="rounded bg-stone-100 px-1 py-0.5 text-[11px]">220 − age</code>{" "}
+            automatically — or type a Max HR explicitly to override (e.g. your highest
+            observed value). If you leave Resting HR blank, we’ll automatically use your
+            latest WHOOP resting HR (when connected).
           </p>
           <form
             action="/api/settings/hr-profile"
             method="post"
-            className="mt-4 grid gap-3 sm:grid-cols-3"
+            className="mt-4 grid gap-3 sm:grid-cols-4"
           >
+            <label className="block">
+              <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
+                Birthday
+              </div>
+              <input
+                name="dateOfBirth"
+                type="date"
+                defaultValue={
+                  user?.dateOfBirth
+                    ? user.dateOfBirth.toISOString().slice(0, 10)
+                    : ""
+                }
+                className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
+              />
+            </label>
             <label className="block">
               <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
                 Max HR (bpm)
@@ -399,7 +577,7 @@ export default async function SettingsPage({
                 type="number"
                 min={120}
                 max={230}
-                placeholder="e.g. 190"
+                placeholder="auto from birthday"
                 defaultValue={user?.hrMaxBpm ?? ""}
                 className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
               />
@@ -431,12 +609,12 @@ export default async function SettingsPage({
                 <option value="percent_threshold">Percent of threshold HR</option>
               </select>
             </label>
-            <div className="sm:col-span-3">
+            <div className="sm:col-span-4">
               <button className="inline-flex h-10 items-center justify-center rounded-xl bg-stone-900 px-4 text-sm font-medium text-white transition-colors hover:bg-stone-800">
                 Save HR profile
               </button>
               <span className="ml-3 text-xs text-stone-500">
-                Saving recomputes cached zones for your runs.
+                Leave Max HR blank to use 220 − age. Saving recomputes cached zones for your runs.
               </span>
             </div>
           </form>

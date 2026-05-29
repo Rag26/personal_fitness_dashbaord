@@ -71,6 +71,8 @@ type CycleRow = {
   score_state?: string;
   score?: {
     strain?: number;
+    /** Full-day energy expenditure (TDEE incl. resting), in kilojoules. */
+    kilojoule?: number;
   };
 };
 
@@ -253,6 +255,7 @@ async function syncWhoopWorkoutsInWindow({
 type DayAgg = {
   recoveryScore: number | null;
   strain: number | null;
+  energyKcal: number | null;
   restingHeartRateBpm: number | null;
   hrvRmssdMs: number | null;
   spo2Percentage: number | null;
@@ -265,24 +268,6 @@ type DayAgg = {
   priority: number;
   raw: Record<string, unknown>;
 };
-
-function emptyAgg(): DayAgg {
-  return {
-    recoveryScore: null,
-    strain: null,
-    restingHeartRateBpm: null,
-    hrvRmssdMs: null,
-    spo2Percentage: null,
-    skinTempCelsius: null,
-    sleepMinutes: null,
-    sleepPerformancePct: null,
-    sleepEfficiencyPct: null,
-    sleepConsistencyPct: null,
-    nap: true,
-    priority: -1,
-    raw: {},
-  };
-}
 
 function aggPriority(nap: boolean, recoveryScore: number | null): number {
   const rs = recoveryScore ?? 0;
@@ -389,6 +374,7 @@ export async function syncWhoopDailyStats({
       const incoming: DayAgg = {
         recoveryScore,
         strain: null,
+        energyKcal: null,
         restingHeartRateBpm:
           sc.resting_heart_rate != null && Number.isFinite(sc.resting_heart_rate)
             ? Math.round(sc.resting_heart_rate)
@@ -447,6 +433,18 @@ export async function syncWhoopDailyStats({
         }
       }
 
+      // Full-day energy expenditure (TDEE) for the cycle, kJ → kcal. Guard
+      // > 0 so an unscored/zero cycle leaves energyKcal null (not 0), which
+      // the nutrition math treats as "no data" and falls back to BMR × 1.4.
+      if (
+        cycle?.score_state === "SCORED" &&
+        typeof cycle.score?.kilojoule === "number" &&
+        Number.isFinite(cycle.score.kilojoule) &&
+        cycle.score.kilojoule > 0
+      ) {
+        incoming.energyKcal = Math.round(cycle.score.kilojoule / 4.184);
+      }
+
       const existing = map.get(dayKey);
       if (!existing || shouldReplace(existing, incoming)) {
         map.set(dayKey, incoming);
@@ -469,6 +467,7 @@ export async function syncWhoopDailyStats({
         date,
         recoveryScore: agg.recoveryScore,
         strain: agg.strain,
+        energyKcal: agg.energyKcal,
         restingHeartRateBpm: agg.restingHeartRateBpm,
         hrvRmssdMs: agg.hrvRmssdMs,
         spo2Percentage: agg.spo2Percentage,
@@ -483,6 +482,7 @@ export async function syncWhoopDailyStats({
       update: {
         recoveryScore: agg.recoveryScore,
         strain: agg.strain,
+        energyKcal: agg.energyKcal,
         restingHeartRateBpm: agg.restingHeartRateBpm,
         hrvRmssdMs: agg.hrvRmssdMs,
         spo2Percentage: agg.spo2Percentage,

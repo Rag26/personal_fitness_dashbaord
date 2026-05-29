@@ -31,7 +31,7 @@ export async function POST(req: Request) {
       data: { runningShoeStartDate: null },
     });
     if (wantsHtml) {
-      const dest = new URL("/running", url.origin);
+      const dest = new URL("/train", url.origin);
       dest.searchParams.set("shoe", "cleared");
       return NextResponse.redirect(dest, { status: 303 });
     }
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
   const parsed = parseIsoDateOnly(startDateRaw);
   if (!parsed) {
     if (wantsHtml) {
-      const dest = new URL("/running", url.origin);
+      const dest = new URL("/train", url.origin);
       dest.searchParams.set("shoe", "error");
       dest.searchParams.set("reason", "Invalid date");
       return NextResponse.redirect(dest, { status: 303 });

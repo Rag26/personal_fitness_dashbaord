@@ -10,6 +10,13 @@ import {
   mifflinStJeorBmrKcal,
   type BiologicalSex,
 } from "@/lib/nutrition-burn";
+import {
+  deriveMacroTargets,
+  latestIntakeKcal,
+  LB_PER_KG,
+  type IntakeHistoryEntry,
+  type MacroOverrides,
+} from "@/lib/nutrition-goal";
 import { assertClaudeTextOk } from "@/lib/claude-output-guard";
 
 const MODEL = "claude-sonnet-4-6";
@@ -208,24 +215,7 @@ async function gatherNutritionData(userId: string) {
   const now = new Date();
   const windowStart = new Date(now.getTime() - (WINDOW_DAYS - 1) * 86_400_000);
 
-  const [rows, weightWhoop, weightManual] = await Promise.all([
-    prisma().dailyNutritionLog.findMany({
-      where: { userId, date: { gte: windowStart } },
-      select: {
-        date: true,
-        source: true,
-        caloriesKcal: true,
-        proteinG: true,
-        carbsG: true,
-        fatG: true,
-        fiberG: true,
-        sugarG: true,
-        sodiumMg: true,
-        saturatedFatG: true,
-        activeEnergyKcal: true,
-      },
-      orderBy: { date: "asc" },
-    }),
+  const [weightWhoop, weightManual, foodLog, whoopEnergy, goal] = await Promise.all([
     prisma().dailyWhoopStat.findMany({
       where: { userId, weightKg: { not: null } },
       select: { date: true, weightKg: true },
@@ -236,28 +226,80 @@ async function gatherNutritionData(userId: string) {
       select: { date: true, weightKg: true },
       orderBy: { date: "asc" },
     }),
+    // FoodLogEntry is the per-food intake source (the only intake source now —
+    // Apple Health was removed). Aggregated per day below.
+    prisma().foodLogEntry.findMany({
+      where: { userId, date: { gte: windowStart } },
+      select: { date: true, caloriesKcal: true, proteinG: true, carbsG: true, fatG: true },
+    }),
+    // WHOOP full-day energy burn (TDEE) — the burn source.
+    prisma().dailyWhoopStat.findMany({
+      where: { userId, energyKcal: { not: null }, date: { gte: windowStart } },
+      select: { date: true, energyKcal: true },
+    }),
+    prisma().weightGoal.findFirst({
+      where: { userId, isActive: true },
+      select: {
+        targetWeightLb: true,
+        deadlineDate: true,
+        startWeightLb: true,
+        intakeHistory: true,
+        macroOverrides: true,
+      },
+    }),
   ]);
 
+  // Intake comes entirely from FoodLogEntry day-sums (one MANUAL-style row per
+  // calendar day).
   const winnerByDay = new Map<string, DayRow>();
-  for (const r of rows as NutritionRow[]) {
-    const dayKey = zonedDayKeyFromDate(r.date, tz);
-    const existing = winnerByDay.get(dayKey);
-    if (!existing) {
-      winnerByDay.set(dayKey, { ...r, dayKey });
-    } else if (r.source === "MANUAL") {
-      winnerByDay.set(dayKey, { ...r, dayKey });
-    } else if (existing.source !== "MANUAL") {
-      winnerByDay.set(dayKey, { ...r, dayKey });
+  const foodSumByDay = new Map<
+    string,
+    { date: Date; cal: number; p: number; c: number; f: number }
+  >();
+  for (const fe of foodLog) {
+    const dayKey = zonedDayKeyFromDate(fe.date, tz);
+    const cur = foodSumByDay.get(dayKey);
+    if (cur) {
+      cur.cal += fe.caloriesKcal;
+      cur.p += fe.proteinG;
+      cur.c += fe.carbsG;
+      cur.f += fe.fatG;
+    } else {
+      foodSumByDay.set(dayKey, {
+        date: fe.date,
+        cal: fe.caloriesKcal,
+        p: fe.proteinG,
+        c: fe.carbsG,
+        f: fe.fatG,
+      });
     }
   }
+  for (const [dayKey, s] of foodSumByDay) {
+    winnerByDay.set(dayKey, {
+      dayKey,
+      date: s.date,
+      source: "MANUAL",
+      caloriesKcal: s.cal,
+      proteinG: s.p,
+      carbsG: s.c,
+      fatG: s.f,
+      fiberG: null,
+      sugarG: null,
+      sodiumMg: null,
+      saturatedFatG: null,
+      activeEnergyKcal: null,
+    });
+  }
+
   const merged = [...winnerByDay.values()].sort(
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
 
-  const activeByDay = new Map<string, number>();
-  for (const r of rows as NutritionRow[]) {
-    if (r.activeEnergyKcal != null && r.activeEnergyKcal > 0) {
-      activeByDay.set(zonedDayKeyFromDate(r.date, tz), r.activeEnergyKcal);
+  // WHOOP full-day burn (kcal) per calendar day; falls back to BMR when absent.
+  const energyByDay = new Map<string, number>();
+  for (const r of whoopEnergy) {
+    if (r.energyKcal != null && r.energyKcal > 0) {
+      energyByDay.set(zonedDayKeyFromDate(r.date, tz), r.energyKcal);
     }
   }
 
@@ -300,14 +342,14 @@ async function gatherNutritionData(userId: string) {
     proteinG: number | null;
     carbsG: number | null;
     fatG: number | null;
-    activeEnergyKcal: number | null;
+    whoopEnergyKcal: number | null;
     totalBurnKcal: number | null;
     deficitKcal: number | null;
   }> = [];
 
   for (const d of mergedTrusted) {
     const dayKey = d.dayKey;
-    const active = activeByDay.get(dayKey) ?? null;
+    const whoopBurn = energyByDay.get(dayKey) ?? null;
     const weight = weightByDayMs.get(dayStartMs(d.date)) ?? null;
     const ageY = dob ? ageYearsAt(dob, d.date) : null;
     const bmr =
@@ -319,8 +361,8 @@ async function gatherNutritionData(userId: string) {
             sex: sex!,
           })
         : null;
-    const totalBurn =
-      bmr != null ? bmr + (active ?? 0) : active != null ? active : null;
+    // WHOOP full-day energy (TDEE) is the burn; fall back to BMR when missing.
+    const totalBurn = whoopBurn != null ? whoopBurn : bmr;
     const deficit =
       d.caloriesKcal != null && totalBurn != null ? d.caloriesKcal - totalBurn : null;
 
@@ -330,17 +372,66 @@ async function gatherNutritionData(userId: string) {
       proteinG: d.proteinG,
       carbsG: d.carbsG,
       fatG: d.fatG,
-      activeEnergyKcal: active,
+      whoopEnergyKcal: whoopBurn,
       totalBurnKcal: totalBurn,
       deficitKcal: deficit,
     });
   }
 
+  // Goal context (Phase 2): give Claude the target, the current adaptive intake
+  // target, derived macros, progress so far, and the most recent recalibration
+  // so insights can speak to the goal ("you're 0.4 lb behind, hold the deficit").
+  let goalContext: GoalContext | null = null;
+  if (goal) {
+    const history = goal.intakeHistory as unknown as IntakeHistoryEntry[];
+    const intakeTargetKcal = latestIntakeKcal(history);
+    const latestWeightKg =
+      weightHistory.length > 0 ? weightHistory[weightHistory.length - 1].weightKg : null;
+    const latestWeightLb =
+      latestWeightKg != null ? Math.round(latestWeightKg * LB_PER_KG * 10) / 10 : null;
+    const currentWeightLb = latestWeightLb ?? goal.startWeightLb;
+
+    let macros: { proteinG: number; carbsG: number; fatG: number } | null = null;
+    if (intakeTargetKcal != null) {
+      const m = deriveMacroTargets({
+        currentWeightLb,
+        intakeKcal: intakeTargetKcal,
+        overrides: (goal.macroOverrides as MacroOverrides | null) ?? undefined,
+      });
+      if (!("error" in m)) macros = m;
+    }
+
+    const lastRecal = [...history]
+      .reverse()
+      .find((e) => e.reason === "recalibrated" || e.reason === "manual") ?? null;
+
+    const daysToDeadline = Math.max(
+      0,
+      Math.round((goal.deadlineDate.getTime() - now.getTime()) / 86_400_000),
+    );
+
+    goalContext = {
+      targetWeightLb: goal.targetWeightLb,
+      startWeightLb: goal.startWeightLb,
+      currentWeightLb,
+      lbToGo: latestWeightLb != null ? Math.round((latestWeightLb - goal.targetWeightLb) * 10) / 10 : null,
+      deadline: fmt(goal.deadlineDate),
+      daysToDeadline,
+      intakeTargetKcal,
+      macros,
+      lastRecalibration: lastRecal
+        ? { intakeKcal: lastRecal.intakeKcal, deltaFromPrev: lastRecal.deltaFromPrev }
+        : null,
+    };
+  }
+
   return {
     tz,
-    burnReady,
+    // Burn is available if WHOOP energy exists OR we can fall back to BMR.
+    burnReady: burnReady || energyByDay.size > 0,
     mergedTrusted,
     dayByDay,
+    goalContext,
     averages: {
       caloriesKcal: avg(mergedTrusted, "caloriesKcal"),
       proteinG: avg(mergedTrusted, "proteinG"),
@@ -350,6 +441,18 @@ async function gatherNutritionData(userId: string) {
     },
   };
 }
+
+type GoalContext = {
+  targetWeightLb: number;
+  startWeightLb: number;
+  currentWeightLb: number;
+  lbToGo: number | null;
+  deadline: string;
+  daysToDeadline: number;
+  intakeTargetKcal: number | null;
+  macros: { proteinG: number; carbsG: number; fatG: number } | null;
+  lastRecalibration: { intakeKcal: number; deltaFromPrev: number } | null;
+};
 
 function buildNutritionDataSummary(data: Awaited<ReturnType<typeof gatherNutritionData>>) {
   const lines: string[] = [];
@@ -374,16 +477,47 @@ function buildNutritionDataSummary(data: Awaited<ReturnType<typeof gatherNutriti
       if (d.proteinG != null) parts.push(`P ${Math.round(d.proteinG)}g`);
       if (d.carbsG != null) parts.push(`C ${Math.round(d.carbsG)}g`);
       if (d.fatG != null) parts.push(`F ${Math.round(d.fatG)}g`);
-      if (d.activeEnergyKcal != null) parts.push(`active ${Math.round(d.activeEnergyKcal)}kcal`);
+      if (d.whoopEnergyKcal != null) parts.push(`whoop ${Math.round(d.whoopEnergyKcal)}kcal`);
       if (d.totalBurnKcal != null) parts.push(`burn ${Math.round(d.totalBurnKcal)}kcal`);
       if (d.deficitKcal != null) parts.push(`def ${Math.round(d.deficitKcal)}kcal`);
       lines.push(`  ${parts.join(" · ")}`);
     }
   }
 
+  const g = data.goalContext;
+  if (g) {
+    lines.push(`\n## Active weight goal`);
+    lines.push(
+      `- Target: ${g.targetWeightLb} lb by ${g.deadline} (${g.daysToDeadline} days out)`,
+    );
+    lines.push(
+      `- Weight: started ${g.startWeightLb} lb` +
+        (g.currentWeightLb != null ? `, now ~${g.currentWeightLb} lb` : "") +
+        (g.lbToGo != null ? ` (${g.lbToGo} lb to go)` : ""),
+    );
+    if (g.intakeTargetKcal != null) {
+      lines.push(`- Adaptive daily intake target: ${g.intakeTargetKcal} kcal`);
+    }
+    if (g.macros) {
+      lines.push(
+        `- Macro targets: ${g.macros.proteinG}g protein · ${g.macros.carbsG}g carbs · ${g.macros.fatG}g fat`,
+      );
+    }
+    if (g.lastRecalibration) {
+      const d = g.lastRecalibration.deltaFromPrev;
+      lines.push(
+        `- Last weekly recalibration: target moved ${d > 0 ? "+" : ""}${d} kcal → ${g.lastRecalibration.intakeKcal} kcal`,
+      );
+    }
+  } else {
+    lines.push(
+      `\nNote: No active weight goal is set. Encourage setting one for adaptive coaching, but still give general intake/macro insights.`,
+    );
+  }
+
   if (!data.burnReady) {
     lines.push(
-      `\nNote: Total burn/deficit requires height + DOB + biological sex + weight history. If missing, only intake/macro insights should be generated.`,
+      `\nNote: Total burn/deficit comes from WHOOP full-day energy (fallback Mifflin–St Jeor BMR, which needs height + DOB + sex + weight). If burn is missing, only intake/macro insights should be generated.`,
     );
   }
 
@@ -399,13 +533,20 @@ Important constraints:
 - If burn/deficit is missing, do not hallucinate it.
 - This is NOT medical advice.
 
+Goal-aware coaching:
+- When an "Active weight goal" block is present, make the insights GOAL-AWARE. Reference the target weight, deadline, and the adaptive daily intake target.
+- Compare the user's actual average intake to their adaptive intake target and say whether they're tracking toward the goal (e.g., "you're averaging 1,950 kcal vs your 1,750 target — that's why the scale is sticky").
+- If a recent weekly recalibration happened, acknowledge it and explain what to do this week.
+- Speak to whether they're on pace for the deadline given lb-to-go and days remaining. Be encouraging and concrete, never shaming.
+- If no goal is set, gently suggest setting one, then proceed with general insights.
+
 Output rules:
 - Produce 4–5 sections total (keep output compact).
 - Keep each section body under 260 characters.
 - Keep the summary under 320 characters.
 - "high" priority = likely to meaningfully impact results or suggests a clear fix.
 - Be practical: suggest a target range, a small habit change, and a way to track it.
-- The "summary" should be 2–3 sentence executive summary of nutrition patterns.
+- The "summary" should be 2–3 sentence executive summary of nutrition patterns, referencing goal progress when a goal exists.
 - Each section needs: emoji (single emoji fitting the topic), title (3–6 words), body (2–4 sentences, ≤260 chars, referencing actual numbers), priority.
 `;
 
@@ -418,7 +559,7 @@ export async function generateAiNutritionInsights(
   if (dataSummary.trim().length < 50) {
     return {
       summary:
-        "Not enough trusted nutrition data to generate insights yet. Upload Apple Health or log a few days manually first.",
+        "Not enough trusted nutrition data to generate insights yet. Log a few days with the food logger first.",
       sections: [],
       generatedAt: new Date().toISOString(),
     };

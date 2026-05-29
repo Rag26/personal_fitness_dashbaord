@@ -72,6 +72,6 @@ export async function POST(req: Request) {
     }).catch(() => {});
   }
 
-  return redirectTo(next && next.startsWith("/") ? next : "/overview");
+  return redirectTo(next && next.startsWith("/") ? next : "/today");
 }
 

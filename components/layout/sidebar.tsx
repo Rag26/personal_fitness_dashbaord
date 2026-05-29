@@ -3,13 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Activity,
   Apple,
-  CalendarDays,
   Dumbbell,
   Gauge,
-  HeartPulse,
-  LineChart,
   Settings,
   TrendingUp,
 } from "lucide-react";
@@ -17,14 +13,10 @@ import {
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/overview", label: "Overview", icon: Gauge },
-  { href: "/running", label: "Running", icon: Activity },
-  { href: "/lifting", label: "Lifting", icon: Dumbbell },
-  { href: "/training", label: "Training", icon: CalendarDays },
-  { href: "/recovery", label: "Recovery", icon: HeartPulse },
+  { href: "/today", label: "Today", icon: Gauge },
+  { href: "/train", label: "Train", icon: Dumbbell },
   { href: "/nutrition", label: "Nutrition", icon: Apple },
-  { href: "/insights", label: "Insights", icon: LineChart },
-  { href: "/journey", label: "Journey", icon: TrendingUp },
+  { href: "/progress", label: "Progress", icon: TrendingUp },
   { href: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -34,7 +26,7 @@ export function Sidebar() {
   return (
     <aside className="hidden md:flex md:w-64 md:flex-col md:bg-transparent">
       <div className="flex h-16 items-center px-6">
-        <Link href="/overview" className="text-lg font-semibold tracking-tight text-stone-900">
+        <Link href="/today" className="text-lg font-semibold tracking-tight text-stone-900">
           LockIn<span className="text-stone-500">.</span>
         </Link>
       </div>

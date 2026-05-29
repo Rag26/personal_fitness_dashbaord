@@ -25,7 +25,7 @@ const RunRouteMap = dynamic(() => import("./run-route-map"), {
 
 export type RecentRunRow = {
   rowKey: string;
-  source: "STRAVA";
+  source: "STRAVA" | "WHOOP";
   providerActivityId: string;
   tag: RunTag;
   exertion: { score10: number | null; level: string } | null;
@@ -56,6 +56,10 @@ type ZoneBlock = {
   type: string;
   sensorBased: boolean;
   customZones: boolean;
+  /** "bpm" = min/max are heart-rate bpm; "percent" = min/max are % of HR max. */
+  presentation?: "bpm" | "percent";
+  /** Optional heading shown above the block (used when multiple blocks are rendered). */
+  label?: string;
   buckets: ZoneBucket[];
 };
 
@@ -94,7 +98,17 @@ function colorForZoneIndex(idx: number, total: number) {
   return palette[idx % palette.length] ?? palette[palette.length - 1];
 }
 
-function zoneLabel(idx: number, total: number, bucket: ZoneBucket) {
+function zoneLabel(
+  idx: number,
+  total: number,
+  bucket: ZoneBucket,
+  presentation: "bpm" | "percent",
+) {
+  if (presentation === "percent") {
+    if (bucket.min <= 0) return `Z${idx} · <${bucket.max}%`;
+    if (bucket.max >= 100) return `Z${idx} · ≥${bucket.min}%`;
+    return `Z${idx} · ${bucket.min}–${bucket.max}%`;
+  }
   if (total === HEARTRATE_ZONE_BAR_COLORS.length) return HR_ZONE_LABELS[idx];
   if (bucket.max <= 0) return `Z${idx + 1} · ${bucket.min}+ bpm`;
   return `Z${idx + 1} · ${bucket.min}–${bucket.max} bpm`;
@@ -125,56 +139,64 @@ function RunTagBadge({ tag, size = "sm" }: { tag: RunTag; size?: "xs" | "sm" }) 
   );
 }
 
-function ZoneBreakdown({ zones, hint }: { zones: ZoneBlock[]; hint?: string | null }) {
-  const hr = zones.find((z) => z.type === "heartrate");
-  if (!hr || hr.buckets.length === 0) {
-    return (
-      <p className="text-sm text-stone-500">
-        Heart rate zone data is not available for this run.
-      </p>
-    );
-  }
+function SingleZoneBreakdown({ hr }: { hr: ZoneBlock }) {
   const totalTime = hr.buckets.reduce((acc, b) => acc + Math.max(0, b.timeSec), 0);
-  if (totalTime <= 0) {
-    return (
-      <p className="text-sm text-stone-500">
-        Heart rate zone data is not available for this run.
-      </p>
-    );
-  }
-
   const total = hr.buckets.length;
+  const presentation: "bpm" | "percent" = hr.presentation ?? "bpm";
   const bucketsWithMeta = hr.buckets.map((b, i) => ({
     bucket: b,
     pct: totalTime > 0 ? (b.timeSec / totalTime) * 100 : 0,
     color: colorForZoneIndex(i, total),
-    label: zoneLabel(i, total, b),
+    label: zoneLabel(i, total, b, presentation),
     index: i,
   }));
 
-  const easySec = bucketsWithMeta.slice(0, Math.min(2, total)).reduce((a, x) => a + x.bucket.timeSec, 0);
-  const aerobicSec = total >= 3 ? bucketsWithMeta[2].bucket.timeSec : 0;
-  const hardSec = bucketsWithMeta.slice(3).reduce((a, x) => a + x.bucket.timeSec, 0);
+  // For percent-presentation (WHOOP), group by % thresholds so the rollup is
+  // semantically correct regardless of bucket count (Z0 collapses into "Easy").
+  // For bpm-presentation (Strava's 5 buckets), keep the original index slice.
+  const easySec =
+    presentation === "percent"
+      ? bucketsWithMeta
+          .filter((x) => x.bucket.max <= 70)
+          .reduce((a, x) => a + x.bucket.timeSec, 0)
+      : bucketsWithMeta.slice(0, Math.min(2, total)).reduce((a, x) => a + x.bucket.timeSec, 0);
+  const aerobicSec =
+    presentation === "percent"
+      ? bucketsWithMeta
+          .filter((x) => x.bucket.min >= 70 && x.bucket.max <= 80)
+          .reduce((a, x) => a + x.bucket.timeSec, 0)
+      : total >= 3
+        ? bucketsWithMeta[2].bucket.timeSec
+        : 0;
+  const hardSec =
+    presentation === "percent"
+      ? bucketsWithMeta
+          .filter((x) => x.bucket.min >= 80)
+          .reduce((a, x) => a + x.bucket.timeSec, 0)
+      : bucketsWithMeta.slice(3).reduce((a, x) => a + x.bucket.timeSec, 0);
   const blend = [
-    { label: "Easy", subtitle: "Z1–Z2", sec: easySec, color: getTagDefinition("easy").color },
-    { label: "Aerobic", subtitle: "Z3", sec: aerobicSec, color: getTagDefinition("tempo").color },
-    { label: "Hard", subtitle: "Z4–Z5", sec: hardSec, color: getTagDefinition("intervals").color },
+    {
+      label: "Easy",
+      subtitle: presentation === "percent" ? "<70%" : "Z1–Z2",
+      sec: easySec,
+      color: getTagDefinition("easy").color,
+    },
+    {
+      label: "Aerobic",
+      subtitle: presentation === "percent" ? "70–80%" : "Z3",
+      sec: aerobicSec,
+      color: getTagDefinition("tempo").color,
+    },
+    {
+      label: "Hard",
+      subtitle: presentation === "percent" ? "≥80%" : "Z4–Z5",
+      sec: hardSec,
+      color: getTagDefinition("intervals").color,
+    },
   ];
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="min-w-0">
-          <h4 className="text-xs font-semibold tracking-wider text-stone-600 uppercase">
-            Heart rate zones
-          </h4>
-          {hint ? (
-            <p className="mt-0.5 text-[10px] leading-snug text-stone-500">{hint}</p>
-          ) : null}
-        </div>
-        <span className="shrink-0 text-[10px] text-stone-500">Total {fmtHms(totalTime)}</span>
-      </div>
-
+    <div className="flex flex-col gap-4">
       <div>
         <div className="flex h-3 w-full overflow-hidden rounded-full ring-1 ring-[color:var(--color-border-subtle)]">
           {bucketsWithMeta.map((z) => (
@@ -189,7 +211,7 @@ function ZoneBreakdown({ zones, hint }: { zones: ZoneBlock[]; hint?: string | nu
         <div className="mt-1.5 text-[10px] text-stone-500">Time-in-zone distribution</div>
       </div>
 
-      <ul className="flex-1 space-y-3">
+      <ul className="space-y-3">
         {bucketsWithMeta.map((z) => (
           <li key={`row-${z.index}`}>
             <div className="mb-1.5 flex items-center justify-between text-[11px]">
@@ -238,6 +260,60 @@ function ZoneBreakdown({ zones, hint }: { zones: ZoneBlock[]; hint?: string | nu
               <div className="text-[10px] text-stone-500">
                 {b.subtitle} · {pct.toFixed(0)}%
               </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ZoneBreakdown({ zones, hint }: { zones: ZoneBlock[]; hint?: string | null }) {
+  const hrBlocks = zones.filter(
+    (z) => z.type === "heartrate" && z.buckets.length > 0 && z.buckets.some((b) => b.timeSec > 0),
+  );
+  if (hrBlocks.length === 0) {
+    return (
+      <p className="text-sm text-stone-500">
+        Heart rate zone data is not available for this run.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col gap-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="text-xs font-semibold tracking-wider text-stone-600 uppercase">
+            Heart rate zones
+          </h4>
+          {hint && hrBlocks.length === 1 ? (
+            <p className="mt-0.5 text-[10px] leading-snug text-stone-500">{hint}</p>
+          ) : null}
+        </div>
+        {hrBlocks.length === 1 ? (
+          <span className="shrink-0 text-[10px] text-stone-500">
+            Total {fmtHms(hrBlocks[0].buckets.reduce((a, b) => a + Math.max(0, b.timeSec), 0))}
+          </span>
+        ) : null}
+      </div>
+
+      <div className={hrBlocks.length > 1 ? "flex flex-col gap-6" : ""}>
+        {hrBlocks.map((hr, i) => {
+          const blockTotal = hr.buckets.reduce((a, b) => a + Math.max(0, b.timeSec), 0);
+          return (
+            <div key={`block-${i}`} className="flex flex-col gap-3">
+              {hrBlocks.length > 1 ? (
+                <div className="flex items-baseline justify-between gap-2 border-t border-dashed border-[color:var(--color-border-subtle)] pt-3 first:border-t-0 first:pt-0">
+                  <div className="min-w-0">
+                    <h5 className="text-[11px] font-semibold tracking-wider text-stone-700 uppercase">
+                      {hr.label ?? (hr.presentation === "percent" ? "WHOOP" : "Strava")}
+                    </h5>
+                  </div>
+                  <span className="shrink-0 text-[10px] text-stone-500">Total {fmtHms(blockTotal)}</span>
+                </div>
+              ) : null}
+              <SingleZoneBreakdown hr={hr} />
             </div>
           );
         })}
@@ -389,7 +465,9 @@ function ExpandedPanel({
             <RunRouteMap polyline={state.polyline as string} />
           ) : (
             <p className="text-sm text-stone-500">
-              Route information is not available for this run.
+              {row.source === "WHOOP"
+                ? "No route — WHOOP doesn't capture GPS for workouts."
+                : "Route information is not available for this run."}
             </p>
           )}
         </div>
@@ -398,11 +476,20 @@ function ExpandedPanel({
   );
 }
 
-function SourcePill() {
+function SourcePill({ source }: { source: "STRAVA" | "WHOOP" }) {
+  // Strava brand orange, WHOOP brand teal.
+  const dot = source === "STRAVA" ? "#fc5200" : "#14b8a6";
+  const label = source === "STRAVA" ? "Strava" : "WHOOP";
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-[color:var(--ui-accent-soft)] px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase text-[color:var(--color-text-secondary)]">
-      <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--ui-accent)]" />
-      Strava
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
+      style={{
+        backgroundColor: `color-mix(in srgb, ${dot} 18%, transparent)`,
+        color: `color-mix(in srgb, ${dot} 65%, var(--foreground))`,
+      }}
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dot }} />
+      {label}
     </span>
   );
 }
@@ -462,10 +549,11 @@ export function RecentRunsTable({ runs, tz }: { runs: RecentRunRow[]; tz: string
     if (!row.providerActivityId) return;
     setDetails((prev) => ({ ...prev, [row.rowKey]: { status: "loading" } }));
     try {
-      const res = await fetch(
-        `/api/strava/activity/${encodeURIComponent(row.providerActivityId)}/details`,
-        { cache: "no-store" },
-      );
+      const url =
+        row.source === "WHOOP"
+          ? `/api/whoop/workout/${encodeURIComponent(row.providerActivityId)}/details`
+          : `/api/strava/activity/${encodeURIComponent(row.providerActivityId)}/details`;
+      const res = await fetch(url, { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as DetailsResponse | null;
       if (!res.ok || !json || !json.ok) {
         throw new Error(json?.error ?? `Request failed (${res.status})`);
@@ -500,7 +588,7 @@ export function RecentRunsTable({ runs, tz }: { runs: RecentRunRow[]; tz: string
   }, [expandedKey, runs, details, loadDetails]);
 
   const handleToggle = (row: RecentRunRow) => {
-    if (row.source !== "STRAVA" || !row.providerActivityId) return;
+    if (!row.providerActivityId) return;
     setExpandedKey((prev) => (prev === row.rowKey ? null : row.rowKey));
   };
 
@@ -538,7 +626,7 @@ export function RecentRunsTable({ runs, tz }: { runs: RecentRunRow[]; tz: string
                 paceSecondsPerMile({ seconds: sec, meters }),
               );
               const elevFt = r.totalElevationM ? metersToFeet(r.totalElevationM) : null;
-              const isExpandable = r.source === "STRAVA" && !!r.providerActivityId;
+              const isExpandable = !!r.providerActivityId;
               const isOpen = expandedKey === r.rowKey;
               const startAt = new Date(r.startAtIso);
               const distancePct =
@@ -579,7 +667,7 @@ export function RecentRunsTable({ runs, tz }: { runs: RecentRunRow[]; tz: string
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center gap-2">
                           <RunTagBadge tag={tag} />
-                          <SourcePill />
+                          <SourcePill source={r.source} />
                           <ExertionPill exertion={r.exertion} />
                         </div>
                         <div className="truncate font-medium text-stone-900">{r.name}</div>

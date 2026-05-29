@@ -28,7 +28,9 @@ const VARIANT = {
 } as const;
 
 type ActivityMonthCalendarProps = {
-  basePath: "/running" | "/lifting";
+  basePath: string;
+  /** Styling variant (run vs lift colors/icon), independent of the nav target. */
+  variant: "/running" | "/lifting";
   year: number;
   month1: number;
   timeZone: string;
@@ -38,6 +40,7 @@ type ActivityMonthCalendarProps = {
 
 export function ActivityMonthCalendar({
   basePath,
+  variant,
   year,
   month1,
   timeZone,
@@ -50,7 +53,7 @@ export function ActivityMonthCalendar({
   const qs = (y: number, m: number) => `?y=${y}&m=${m}`;
   const title = formatZonedCalendarMonthTitle(year, month1, timeZone);
 
-  const v = VARIANT[basePath];
+  const v = VARIANT[variant];
   const Icon = v.icon;
 
   const cells: (number | null)[] = [

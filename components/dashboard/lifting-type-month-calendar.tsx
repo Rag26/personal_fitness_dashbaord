@@ -112,7 +112,7 @@ function liftDayCellLook(bucket: LiftDayBucket | undefined): {
 }
 
 type LiftingTypeMonthCalendarProps = {
-  basePath?: "/lifting";
+  basePath?: string;
   year: number;
   month1: number;
   timeZone: string;
@@ -121,7 +121,7 @@ type LiftingTypeMonthCalendarProps = {
 };
 
 export function LiftingTypeMonthCalendar({
-  basePath = "/lifting",
+  basePath = "/train",
   year,
   month1,
   timeZone,

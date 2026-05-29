@@ -13,7 +13,7 @@ export default function LoginPage({
     password?: string;
   };
 }) {
-  const next = searchParams?.next ?? "/overview";
+  const next = searchParams?.next ?? "/today";
 
   return (
     <div className="dashboard-bg min-h-dvh px-6 py-14">

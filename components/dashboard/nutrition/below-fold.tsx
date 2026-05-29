@@ -1,17 +1,11 @@
 import "server-only";
-import Link from "next/link";
 
 import { ChartCard } from "@/components/dashboard/chart-card";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { MultiLineChartView } from "@/components/charts/multi-line-chart";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { prisma } from "@/lib/db";
 import { chartPalette } from "@/lib/chart-palette";
-import {
-  formatZonedDateShort,
-  formatZonedWeekdayMonthDayYear,
-  zonedDayKeyFromDate,
-} from "@/lib/format-zoned";
+import { formatZonedDateShort, zonedDayKeyFromDate } from "@/lib/format-zoned";
 import {
   addCalendarDaysToZonedParts,
   canonicalZonedDayStart,
@@ -27,37 +21,27 @@ import {
 } from "@/lib/nutrition-burn";
 
 const WINDOW_DAYS = 60;
-const RECENT_LIMIT = 25;
 
 /**
- * Partial Apple Health syncs (and similar) often produce implausibly low daily
- * totals. We treat days at or below this intake floor as untrusted and omit
- * them from averages and charts so burn/deficit math isn’t skewed.
+ * Partial-logged days often produce implausibly low daily totals. We treat days
+ * at or below this intake floor as untrusted and omit them from averages and
+ * charts so burn/deficit math isn't skewed.
  */
 const MIN_TRUSTED_CONSUMED_KCAL = 900;
 
-function hasTrustedIntake(d: DayRow): boolean {
-  const c = d.caloriesKcal;
-  return c != null && Number.isFinite(c) && c > MIN_TRUSTED_CONSUMED_KCAL;
-}
-
-type NutritionRow = {
-  id: string;
+/** One calendar day's summed intake (from FoodLogEntry rows). */
+type DayRow = {
+  dayKey: string;
   date: Date;
-  source: "BACKFILL" | "MANUAL";
-  caloriesKcal: number | null;
-  proteinG: number | null;
-  carbsG: number | null;
-  fatG: number | null;
-  fiberG: number | null;
-  sugarG: number | null;
-  sodiumMg: number | null;
-  saturatedFatG: number | null;
-  activeEnergyKcal: number | null;
-  notes: string | null;
+  caloriesKcal: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
 };
 
-type DayRow = NutritionRow & { dayKey: string };
+function hasTrustedIntake(d: DayRow): boolean {
+  return Number.isFinite(d.caloriesKcal) && d.caloriesKcal > MIN_TRUSTED_CONSUMED_KCAL;
+}
 
 function dayLabel(d: Date, tz: string) {
   return formatZonedDateShort(d, tz);
@@ -72,12 +56,12 @@ export async function NutritionBelowFold({
   tz: string;
   todayIso: string;
 }) {
+  void todayIso; // logging happens in FoodLogger above; this is the trend view.
   const now = new Date();
 
   /**
-   * 60-day rolling window aligned to user-timezone calendar days. Same trick
-   * as the insights page: derive the oldest day in TZ-aware steps so DST
-   * doesn't shave or pad the window.
+   * 60-day rolling window aligned to user-timezone calendar days. Derive the
+   * oldest day in TZ-aware steps so DST doesn't shave or pad the window.
    */
   const projectionStart = (() => {
     const tp = localCalendarParts(now, tz);
@@ -91,107 +75,81 @@ export async function NutritionBelowFold({
     return startOfZonedCalendarDay(oldest.y, oldest.m, oldest.d, tz);
   })();
 
-  const [
-    profile,
-    windowRows,
-    recentRows,
-    manualDatesOnly,
-    weightWhoop,
-    weightManual,
-  ] = await Promise.all([
-    prisma().user.findUnique({
-      where: { id: userId },
-      select: {
-        heightCm: true,
-        dateOfBirth: true,
-        biologicalSex: true,
-      },
-    }),
-    prisma().dailyNutritionLog.findMany({
-      where: { userId, date: { gte: projectionStart } },
-      select: {
-        id: true,
-        date: true,
-        source: true,
-        caloriesKcal: true,
-        proteinG: true,
-        carbsG: true,
-        fatG: true,
-        fiberG: true,
-        sugarG: true,
-        sodiumMg: true,
-        saturatedFatG: true,
-        activeEnergyKcal: true,
-        notes: true,
-      },
-      orderBy: { date: "asc" },
-    }),
-    prisma().dailyNutritionLog.findMany({
-      where: { userId },
-      select: {
-        id: true,
-        date: true,
-        source: true,
-        caloriesKcal: true,
-        proteinG: true,
-        carbsG: true,
-        fatG: true,
-        fiberG: true,
-        sugarG: true,
-        sodiumMg: true,
-        saturatedFatG: true,
-        activeEnergyKcal: true,
-        notes: true,
-      },
-      orderBy: { date: "desc" },
-      take: RECENT_LIMIT * 2, // headroom; we filter visually below.
-    }),
-    prisma().dailyNutritionLog.findMany({
-      where: { userId, source: "MANUAL" },
-      select: { date: true },
-    }),
-    prisma().dailyWhoopStat.findMany({
-      where: { userId, weightKg: { not: null } },
-      select: { date: true, weightKg: true },
-      orderBy: { date: "asc" },
-    }),
-    prisma().manualWeightLog.findMany({
-      where: { userId },
-      select: { date: true, weightKg: true },
-      orderBy: { date: "asc" },
-    }),
-  ]);
+  const [profile, foodLog, whoopEnergy, weightWhoop, weightManual] =
+    await Promise.all([
+      prisma().user.findUnique({
+        where: { id: userId },
+        select: {
+          heightCm: true,
+          dateOfBirth: true,
+          biologicalSex: true,
+        },
+      }),
+      // Intake: per-food MANUAL log (the live source). Summed per day below.
+      prisma().foodLogEntry.findMany({
+        where: { userId, date: { gte: projectionStart } },
+        select: {
+          date: true,
+          caloriesKcal: true,
+          proteinG: true,
+          carbsG: true,
+          fatG: true,
+        },
+        orderBy: { date: "asc" },
+      }),
+      // Burn: WHOOP full-day energy (TDEE). Separate query from the weight one
+      // below, which filters on weightKg (would exclude energy-only days).
+      prisma().dailyWhoopStat.findMany({
+        where: { userId, energyKcal: { not: null }, date: { gte: projectionStart } },
+        select: { date: true, energyKcal: true },
+      }),
+      prisma().dailyWhoopStat.findMany({
+        where: { userId, weightKg: { not: null } },
+        select: { date: true, weightKg: true },
+        orderBy: { date: "asc" },
+      }),
+      prisma().manualWeightLog.findMany({
+        where: { userId },
+        select: { date: true, weightKg: true },
+        orderBy: { date: "asc" },
+      }),
+    ]);
 
-  /**
-   * Collapse (BACKFILL, MANUAL) pairs to a single per-day row — MANUAL wins
-   * when both exist (order-independent).
-   */
-  const winnerByDay = new Map<string, DayRow>();
-  for (const r of windowRows as NutritionRow[]) {
-    const dayKey = zonedDayKeyFromDate(r.date, tz);
-    const existing = winnerByDay.get(dayKey);
-    if (!existing) {
-      winnerByDay.set(dayKey, { ...r, dayKey });
-    } else if (r.source === "MANUAL") {
-      winnerByDay.set(dayKey, { ...r, dayKey });
-    } else if (existing.source !== "MANUAL") {
-      winnerByDay.set(dayKey, { ...r, dayKey });
+  // Sum FoodLogEntry rows into one row per user-tz calendar day.
+  const dayByKey = new Map<string, DayRow>();
+  for (const fe of foodLog) {
+    const dayKey = zonedDayKeyFromDate(fe.date, tz);
+    const cur = dayByKey.get(dayKey);
+    if (cur) {
+      cur.caloriesKcal += fe.caloriesKcal;
+      cur.proteinG += fe.proteinG;
+      cur.carbsG += fe.carbsG;
+      cur.fatG += fe.fatG;
+    } else {
+      dayByKey.set(dayKey, {
+        dayKey,
+        date: fe.date,
+        caloriesKcal: fe.caloriesKcal,
+        proteinG: fe.proteinG,
+        carbsG: fe.carbsG,
+        fatG: fe.fatG,
+      });
     }
   }
-  const merged = [...winnerByDay.values()].sort(
+  const merged = [...dayByKey.values()].sort(
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
 
   const mergedTrusted = merged.filter(hasTrustedIntake);
   const trustedHint = `Days with consumed > ${MIN_TRUSTED_CONSUMED_KCAL} kcal · last ${WINDOW_DAYS}d`;
 
-  /** Average over trusted-intake days where the metric was recorded (skip nulls). */
-  const avg = (key: keyof NutritionRow & string) => {
+  /** Average a macro over trusted-intake days where the value is positive. */
+  const avg = (key: "caloriesKcal" | "proteinG" | "carbsG" | "fatG") => {
     let sum = 0;
     let n = 0;
     for (const d of mergedTrusted) {
-      const v = d[key] as number | null;
-      if (v != null && Number.isFinite(v) && v > 0) {
+      const v = d[key];
+      if (Number.isFinite(v) && v > 0) {
         sum += v;
         n += 1;
       }
@@ -204,25 +162,18 @@ export async function NutritionBelowFold({
   const avgCarbs = avg("carbsG");
   const avgFat = avg("fatG");
 
-  /**
-   * Active energy (kcal burned outside of resting metabolism) is only ever
-   * stored on BACKFILL rows. The MANUAL-wins merge would silently drop
-   * Apple-Health activity data on days the user also logged calories
-   * manually, so we read activeEnergy independently per day from any row
-   * that has it.
-   */
-  const activeByDay = new Map<string, number>();
-  for (const r of windowRows as NutritionRow[]) {
-    if (r.activeEnergyKcal != null && r.activeEnergyKcal > 0) {
-      activeByDay.set(zonedDayKeyFromDate(r.date, tz), r.activeEnergyKcal);
+  // WHOOP full-day burn (kcal) per calendar day. Falls back to BMR when absent.
+  const energyByDay = new Map<string, number>();
+  for (const r of whoopEnergy) {
+    if (r.energyKcal != null && r.energyKcal > 0) {
+      energyByDay.set(zonedDayKeyFromDate(r.date, tz), r.energyKcal);
     }
   }
 
   /**
-   * BMR via Mifflin–St Jeor. Needs height + DOB + sex on the user profile and
-   * a per-day weight (forward-filled from WHOOP + manual scale logs). When any
-   * input is missing we surface a "set up your profile" empty state instead of
-   * fabricating numbers.
+   * BMR via Mifflin–St Jeor. Needs height + DOB + sex on the profile and a
+   * per-day weight (forward-filled from WHOOP + manual scale logs). Used as the
+   * burn fallback on days without a WHOOP energy reading.
    */
   const heightCm = profile?.heightCm ?? null;
   const dob = profile?.dateOfBirth ?? null;
@@ -233,21 +184,13 @@ export async function NutritionBelowFold({
       ? (profile.biologicalSex as BiologicalSex)
       : null;
 
-  /** First/last day of the rolling window in user-tz midnight ms (chart axis). */
   const windowStartMs = projectionStart.getTime();
-  const todayStartMs = startOfZonedCalendarDay(
-    localCalendarParts(now, tz).y,
-    localCalendarParts(now, tz).m,
-    localCalendarParts(now, tz).d,
-    tz,
-  ).getTime();
+  const tpNow = localCalendarParts(now, tz);
+  const todayStartMs = startOfZonedCalendarDay(tpNow.y, tpNow.m, tpNow.d, tz).getTime();
 
-  /** Same per-day forward-fill the insights page uses for weight projection. */
   const weightHistory: { date: Date; weightKg: number }[] = [];
   for (const w of weightWhoop) {
-    if (w.weightKg != null) {
-      weightHistory.push({ date: w.date, weightKg: w.weightKg });
-    }
+    if (w.weightKg != null) weightHistory.push({ date: w.date, weightKg: w.weightKg });
   }
   for (const w of weightManual) {
     weightHistory.push({ date: w.date, weightKg: w.weightKg });
@@ -264,17 +207,17 @@ export async function NutritionBelowFold({
 
   const hasProfile = heightCm != null && dob != null && sex != null;
   const hasWeight = weightByDayMs.size > 0;
-  const burnReady = hasProfile && hasWeight;
+  const hasWhoopEnergy = energyByDay.size > 0;
+  // Burn is computable if we have WHOOP energy OR can fall back to BMR.
+  const burnReady = hasWhoopEnergy || (hasProfile && hasWeight);
 
   /**
-   * Per-day energy series. We compute BMR each day so it tracks weight (a
-   * 5-pound swing moves BMR by ~25kcal — small but visible on a deficit
-   * chart). Total burn = BMR + active energy that day.
+   * Per-day energy series. Total burn = WHOOP full-day energy when available,
+   * else BMR (which tracks weight). Deficit = consumed − burn.
    */
   type EnergyPoint = {
     day: string;
     consumedKcal: number | null;
-    activeKcal: number | null;
     bmrKcal: number | null;
     totalBurnKcal: number | null;
     deficitKcal: number | null;
@@ -282,7 +225,6 @@ export async function NutritionBelowFold({
   const energySeries: EnergyPoint[] = [];
   for (const d of mergedTrusted) {
     const dayMs = canonicalZonedDayStart(d.date, tz).getTime();
-    const dayKey = zonedDayKeyFromDate(d.date, tz);
     const weight = weightByDayMs.get(dayMs) ?? null;
     const ageY = dob ? ageYearsAt(dob, d.date) : null;
     const bmr =
@@ -294,24 +236,20 @@ export async function NutritionBelowFold({
             sex: sex!,
           })
         : null;
-    const active = activeByDay.get(dayKey) ?? null;
-    const totalBurn =
-      bmr != null ? bmr + (active ?? 0) : active != null ? active : null;
+    const whoopBurn = energyByDay.get(d.dayKey) ?? null;
+    const totalBurn = whoopBurn != null ? whoopBurn : bmr;
     const consumed = d.caloriesKcal;
-    const deficit =
-      consumed != null && totalBurn != null ? consumed - totalBurn : null;
+    const deficit = totalBurn != null ? consumed - totalBurn : null;
 
     energySeries.push({
       day: dayLabel(d.date, tz),
-      consumedKcal: consumed != null ? Math.round(consumed) : null,
-      activeKcal: active != null ? Math.round(active) : null,
+      consumedKcal: Math.round(consumed),
       bmrKcal: bmr != null ? Math.round(bmr) : null,
       totalBurnKcal: totalBurn != null ? Math.round(totalBurn) : null,
       deficitKcal: deficit != null ? Math.round(deficit) : null,
     });
   }
 
-  /** Averages for the new burn / deficit stat cards. */
   const avgFromSeries = (key: keyof EnergyPoint) => {
     let sum = 0;
     let n = 0;
@@ -326,40 +264,17 @@ export async function NutritionBelowFold({
   };
   const avgBurn = avgFromSeries("totalBurnKcal");
   const avgDeficit = avgFromSeries("deficitKcal");
-  const avgActive = avgFromSeries("activeKcal");
 
   const macrosData = mergedTrusted.map((d) => ({
     day: dayLabel(d.date, tz),
-    protein: d.proteinG != null ? Math.round(d.proteinG) : null,
-    carbs: d.carbsG != null ? Math.round(d.carbsG) : null,
-    fat: d.fatG != null ? Math.round(d.fatG) : null,
+    protein: Math.round(d.proteinG),
+    carbs: Math.round(d.carbsG),
+    fat: Math.round(d.fatG),
   }));
 
-  /**
-   * For the recent table, BACKFILL rows are tagged shadowed when any MANUAL
-   * row exists on that calendar day (manual wins on charts). Uses all manual
-   * rows — not just the recent slice — so older backfill rows badge correctly.
-   */
-  const manualDays = new Set(
-    manualDatesOnly.map((r) => zonedDayKeyFromDate(r.date, tz)),
-  );
-  const recent = (recentRows as NutritionRow[])
-    .map((r) => ({
-      ...r,
-      dayKey: zonedDayKeyFromDate(r.date, tz),
-      shadowed: r.source === "BACKFILL" && manualDays.has(zonedDayKeyFromDate(r.date, tz)),
-    }))
-    .slice(0, RECENT_LIMIT);
-
-  const backfillCount = recentRows.filter((r) => r.source === "BACKFILL").length;
-  const manualCount = recentRows.filter((r) => r.source === "MANUAL").length;
-
-  const weightDayLong = (d: Date) =>
-    formatZonedWeekdayMonthDayYear(canonicalZonedDayStart(d, tz), tz);
-
   const deficitDescription = burnReady
-    ? `Mifflin–St Jeor BMR (height ${heightCm!.toFixed(0)} cm, sex ${sex}) + Apple Health active energy. Negative bars = deficit, positive = surplus.`
-    : "Add height, DOB and biological sex (or upload Apple Health to auto-fill) to compute BMR and per-day burn.";
+    ? "WHOOP full-day energy burn (fallback Mifflin–St Jeor BMR). Negative bars = deficit, positive = surplus."
+    : "Connect WHOOP for daily energy burn, or add height, DOB and biological sex (+ a weight) to fall back to BMR.";
 
   return (
     <>
@@ -384,8 +299,8 @@ export async function NutritionBelowFold({
           value={avgBurn != null ? `${Math.round(avgBurn)} kcal` : "—"}
           hint={
             burnReady
-              ? `BMR + active · ${trustedHint}${avgActive != null ? ` · active ${Math.round(avgActive)}/day` : ""}`
-              : "Profile incomplete"
+              ? `WHOOP energy (fallback BMR) · ${trustedHint}`
+              : "Connect WHOOP or complete BMR profile"
           }
         />
         <StatCard
@@ -423,7 +338,7 @@ export async function NutritionBelowFold({
       <section>
         <ChartCard
           title="Calories in vs out"
-          description={`Consumed vs total burn (BMR + active) · ${trustedHint} · ${backfillCount} backfill / ${manualCount} manual`}
+          description={`Consumed (logged food) vs WHOOP full-day burn · ${trustedHint}`}
         >
           <MultiLineChartView
             data={energySeries}
@@ -447,14 +362,6 @@ export async function NutritionBelowFold({
                 name: "BMR",
                 yAxisId: "left",
                 strokeDasharray: "4 4",
-                showDots: false,
-              },
-              {
-                dataKey: "activeKcal",
-                color: chartPalette.cal,
-                name: "Active (kcal)",
-                yAxisId: "left",
-                strokeDasharray: "2 4",
                 showDots: false,
               },
             ]}
@@ -525,171 +432,7 @@ export async function NutritionBelowFold({
           />
         </ChartCard>
       </section>
-
-      <section className="grid gap-4 lg:grid-cols-5">
-        {/* Manual entry form (3 cols) */}
-        <Card className="lg:col-span-3 self-start">
-          <CardHeader>
-            <CardTitle>Log a day manually</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm leading-relaxed text-stone-600">
-              Add or update calorie + macro totals for any day. Manual totals
-              show on charts whenever present — Apple Health backfill fills gaps
-              for days you don&apos;t log yourself.
-            </p>
-            <form
-              action="/api/nutrition/manual"
-              method="post"
-              className="grid gap-3 sm:grid-cols-2"
-            >
-              <label className="block sm:col-span-2">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Date
-                </div>
-                <input
-                  name="date"
-                  type="date"
-                  required
-                  defaultValue={todayIso}
-                  max={todayIso}
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                />
-              </label>
-              <NumberField name="caloriesKcal" label="Calories (kcal)" placeholder="e.g. 2400" max={20000} />
-              <NumberField name="proteinG" label="Protein (g)" placeholder="e.g. 175" max={1000} />
-              <NumberField name="carbsG" label="Carbs (g)" placeholder="e.g. 280" max={2000} />
-              <NumberField name="fatG" label="Fat (g)" placeholder="e.g. 75" max={1000} />
-              <NumberField name="fiberG" label="Fiber (g)" placeholder="optional" max={500} />
-              <NumberField name="sugarG" label="Sugar (g)" placeholder="optional" max={2000} />
-              <NumberField name="sodiumMg" label="Sodium (mg)" placeholder="optional" max={20000} />
-              <NumberField name="saturatedFatG" label="Saturated fat (g)" placeholder="optional" max={500} />
-              <label className="block sm:col-span-2">
-                <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-                  Notes (optional)
-                </div>
-                <input
-                  name="notes"
-                  type="text"
-                  maxLength={280}
-                  placeholder="e.g. cut day, post-race refeed"
-                  className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-                />
-              </label>
-              <div className="sm:col-span-2 flex items-center gap-3">
-                <button className="inline-flex h-10 items-center justify-center rounded-xl bg-stone-900 px-4 text-sm font-medium text-white transition-colors hover:bg-stone-800">
-                  Save day
-                </button>
-                <span className="text-xs text-stone-500">
-                  Empty fields are saved as null. Only fill in what you tracked.
-                </span>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* Recent entries list (2 cols) */}
-        <Card className="lg:col-span-2 self-start">
-          <CardHeader>
-            <CardTitle>Recent entries</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {recent.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[color:var(--color-border-subtle)] p-6 text-sm text-stone-500">
-                No nutrition data yet. Upload an Apple Health export above or
-                log a day manually on the left.
-              </div>
-            ) : (
-              <ul className="divide-y divide-[color:var(--color-border-subtle)]">
-                {recent.map((row) => (
-                  <li
-                    key={row.id}
-                    className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-stone-900">
-                        <span>
-                          {row.caloriesKcal != null
-                            ? `${Math.round(row.caloriesKcal)} kcal`
-                            : "—"}
-                        </span>
-                        <span className="text-xs font-normal text-stone-500">
-                          {weightDayLong(row.date)}
-                        </span>
-                        <SourcePill source={row.source} shadowed={row.shadowed} />
-                      </div>
-                      <div className="mt-0.5 text-xs text-stone-500">
-                        {row.proteinG != null ? `${Math.round(row.proteinG)} P` : null}
-                        {row.proteinG != null && (row.carbsG != null || row.fatG != null) ? " · " : null}
-                        {row.carbsG != null ? `${Math.round(row.carbsG)} C` : null}
-                        {row.carbsG != null && row.fatG != null ? " · " : null}
-                        {row.fatG != null ? `${Math.round(row.fatG)} F` : null}
-                        {row.activeEnergyKcal != null ? (
-                          <span className="ml-2 text-stone-500">
-                            · {Math.round(row.activeEnergyKcal)} kcal active
-                          </span>
-                        ) : null}
-                        {row.notes ? <span className="ml-2 italic text-stone-500">{row.notes}</span> : null}
-                      </div>
-                    </div>
-                    {row.source === "MANUAL" ? (
-                      <form action="/api/nutrition/manual" method="post">
-                        <input type="hidden" name="_action" value="delete" />
-                        <input type="hidden" name="id" value={row.id} />
-                        <button
-                          type="submit"
-                          className="text-xs font-medium text-stone-500 hover:text-[color:var(--ui-danger)]"
-                        >
-                          Delete
-                        </button>
-                      </form>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p className="mt-3 text-xs text-stone-500">
-              Showing {recent.length} most recent rows across both sources.{" "}
-              <Link
-                href="#log-day-manually"
-                className="font-medium text-orange-700 underline-offset-2 hover:underline"
-              >
-                Add another →
-              </Link>
-            </p>
-          </CardContent>
-        </Card>
-      </section>
     </>
-  );
-}
-
-function NumberField({
-  name,
-  label,
-  placeholder,
-  max,
-}: {
-  name: string;
-  label: string;
-  placeholder?: string;
-  max: number;
-}) {
-  return (
-    <label className="block">
-      <div className="text-[10px] font-medium tracking-wider text-stone-500 uppercase">
-        {label}
-      </div>
-      <input
-        name={name}
-        type="number"
-        step="any"
-        min="0"
-        max={max}
-        placeholder={placeholder}
-        className="mt-1 h-10 w-full rounded-xl border border-amber-950/15 bg-card px-3 text-sm text-stone-900 outline-none focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/25"
-      />
-    </label>
   );
 }
 
@@ -726,9 +469,9 @@ function ProfileCard({
           </h2>
           <p className="mt-1 text-xs text-[color:var(--color-text-tertiary)]">
             {burnReady
-              ? `${profile.heightCm!.toFixed(0)} cm · ${profile.biologicalSex} · DOB ${dobIso}`
+              ? `${profile.heightCm != null ? `${profile.heightCm.toFixed(0)} cm · ` : ""}${profile.biologicalSex ?? ""}${dobIso ? ` · DOB ${dobIso}` : ""}`
               : !hasWeight
-                ? "Log a weight (Insights → Log a weight) to enable BMR."
+                ? "Log a weight to enable the BMR burn fallback."
                 : "Add height, DOB and biological sex to compute BMR."}
           </p>
         </div>
@@ -811,36 +554,5 @@ function ProfileCard({
         </div>
       </form>
     </details>
-  );
-}
-
-function SourcePill({
-  source,
-  shadowed,
-}: {
-  source: "BACKFILL" | "MANUAL";
-  shadowed?: boolean;
-}) {
-  if (source === "BACKFILL" && shadowed) {
-    return (
-      <span
-        className="inline-flex items-center rounded-full border border-stone-300/60 bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium text-stone-500"
-        title="Not used on charts — a manual entry wins this calendar day"
-      >
-        Backfill · shadowed
-      </span>
-    );
-  }
-  if (source === "BACKFILL") {
-    return (
-      <span className="inline-flex items-center rounded-full border border-emerald-300/40 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
-        Backfill
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center rounded-full border border-orange-300/40 bg-orange-50 px-1.5 py-0.5 text-[10px] font-medium text-orange-800">
-      Manual
-    </span>
   );
 }

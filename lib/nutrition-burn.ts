@@ -48,23 +48,6 @@ export function mifflinStJeorBmrKcal(args: {
 }
 
 /**
- * Total daily energy expenditure (TDEE) used by the Nutrition page when the
- * user has Apple Health active-energy data: BMR + active energy burned that
- * day. Apple Watch's "Total Energy" is roughly this same sum, so we match.
- *
- * For days without an active-energy record, callers should fall back to BMR
- * alone (or skip the day in averages). This helper just adds the two numbers
- * if present.
- */
-export function totalDailyBurnKcal(
-  bmrKcal: number | null,
-  activeEnergyKcal: number | null,
-): number | null {
-  if (bmrKcal == null) return null;
-  return bmrKcal + (activeEnergyKcal ?? 0);
-}
-
-/**
  * Forward-fill a sparse weight history (kg) to a per-day map for every day in
  * `[startMs, endMs]` (inclusive on both ends, midnight-aligned). Each day uses
  * the most recent prior weight measurement; days before the first measurement

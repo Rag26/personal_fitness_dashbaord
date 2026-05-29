@@ -8,7 +8,7 @@ export default function SignupPage({
 }: {
   searchParams?: { next?: string; error?: string };
 }) {
-  const next = searchParams?.next ?? "/overview";
+  const next = searchParams?.next ?? "/today";
   const timezones = getTimezones();
   const defaultTimezone =
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

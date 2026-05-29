@@ -6,13 +6,18 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   const isProtected =
+    pathname.startsWith("/today") ||
+    pathname.startsWith("/train") ||
+    pathname.startsWith("/progress") ||
+    pathname.startsWith("/nutrition") ||
+    pathname.startsWith("/settings") ||
+    // Retired routes (now 308-redirected in next.config) — still gate them so
+    // logged-out hits bounce to /login rather than leaking a redirect.
     pathname.startsWith("/overview") ||
     pathname.startsWith("/running") ||
     pathname.startsWith("/recovery") ||
-    pathname.startsWith("/nutrition") ||
     pathname.startsWith("/insights") ||
     pathname.startsWith("/journey") ||
-    pathname.startsWith("/settings") ||
     pathname.startsWith("/api/strava") ||
     pathname.startsWith("/api/whoop") ||
     pathname.startsWith("/api/insights") ||
@@ -49,14 +54,8 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  /**
-   * Exclude `/api/nutrition/upload` so Next.js does **not** clone the entire
-   * multipart body through middleware (Apple Health XML is often 200MB+). Auth
-   * still runs first inside the route handler via `requireUserId()` before
-   * `req.formData()` reads the file stream.
-   */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/nutrition/upload).*)",
+    "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
 };
 

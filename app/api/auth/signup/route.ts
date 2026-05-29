@@ -54,6 +54,6 @@ export async function POST(req: Request) {
   });
 
   await createSession(user.id);
-  return redirectTo(next && next.startsWith("/") ? next : "/overview");
+  return redirectTo(next && next.startsWith("/") ? next : "/today");
 }
 
