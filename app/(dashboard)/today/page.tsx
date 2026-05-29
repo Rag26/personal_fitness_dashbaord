@@ -203,7 +203,7 @@ export default async function TodayPage({
         />
       </section>
 
-      <details className="group rounded-2xl border border-[color:var(--color-border-subtle)] bg-card/55 px-4 py-3">
+      <details open className="group rounded-2xl border border-[color:var(--color-border-subtle)] bg-card/55 px-4 py-3">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 select-none">
           <div>
             <div className="text-sm font-medium text-[color:var(--color-text-primary)]">
